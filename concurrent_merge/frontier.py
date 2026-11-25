@@ -64,6 +64,7 @@ class Certificate:
     unit: str
     inputs: dict  # input key -> digest the passing run read
     seconds: float = 0.0
+    source: str = ""  # where it came from: "" for lit's own store, "proof" for a signed proof
 
 
 @dataclass
@@ -304,7 +305,7 @@ def runner_inputs(keys, env=None):
     return out
 
 
-def from_store(store, job, runner=True):
+def from_store(store, job, runner=True, proofs=None):
     """The program map of one job from lit's unit store (cached-units records).
 
     A file recorded with symbols becomes one input per function the unit ran
@@ -314,11 +315,30 @@ def from_store(store, job, runner=True):
     the environment, and each file outside the checkout it read. Each unit's
     newest passing footprint becomes its certificate on main. Main's runner
     inputs are the recorded ones; runner_inputs gives this runner's.
+
+    `proofs` is a store that `concurrent-merge proof take` filled: records other
+    machines signed, typically a PR's own CI run on its head. They become
+    certificates too (source "proof"), after lit's own, but say nothing about
+    main: they prove a unit only where main plus a change agrees with what they
+    read, and only in the environment they recorded.
     """
+    certs, base = _certificates(store, job, runner)
+    f = Frontier(base)
+    for cert in certs:
+        f.record(cert.unit, cert=cert)
+    if proofs is not None:
+        for cert in _certificates(proofs, job, runner)[0]:
+            cert.source = "proof"
+            f.record(cert.unit, cert=cert)
+    return f
+
+
+def _certificates(store, job, runner):
+    """([Certificate], {key: digest} the records read) from one store's job."""
     from .footprint import MACHINE_LOCAL, under
 
     directory = Path(store) / job
-    tables, base, f = {}, {}, None
+    tables, base = {}, {}
     certs = []
     for path in sorted((directory / "units").glob("*.json")):
         try:
@@ -328,6 +348,8 @@ def from_store(store, job, runner=True):
         if bundle.get("kind") != "lit-unit-footprints":
             continue
         for name, unit in bundle["units"].items():
+            if unit.get("exit_code", 0) != 0 or unit.get("incomplete"):
+                continue
             ran = unit.get("symbols") or {}
             inputs = {}
             for file in unit["tracked"]:
@@ -352,7 +374,4 @@ def from_store(store, job, runner=True):
                         inputs[path] = bundle.get("external", {}).get(path)
             base.update(inputs)
             certs.append(Certificate(name, inputs, unit.get("seconds") or 0.0))
-    f = Frontier(base)
-    for cert in certs:
-        f.record(cert.unit, cert=cert)
-    return f
+    return certs, base

@@ -75,26 +75,29 @@ class ShadowTests(unittest.TestCase):
     def oid(self, commit, path):
         return self.git("rev-parse", f"{commit}:{path}")
 
-    def record(self, units, env=None):
-        job = self.store / "suite"
-        (job / "units").mkdir(parents=True)
-        (job / "symbols").mkdir()
+    def record(self, units, env=None, commit=None, store=None):
+        """Passing records of `units` at `commit` (default main) in `store` (default the unit store)."""
+        commit = commit or self.base
+        job = (store or self.store) / "suite"
+        (job / "units").mkdir(parents=True, exist_ok=True)
+        (job / "symbols").mkdir(exist_ok=True)
         tracked = {}
         for i, (name, (reads, ran)) in enumerate(units.items()):
             for path in reads:
-                oid = self.oid(self.base, path)
+                oid = self.oid(commit, path)
                 tracked[path] = ["100644", oid]
                 if ran and path in ran:
-                    table = js_symbols.table((self.work / path).read_bytes(), ".ts")
+                    blob = self.git("show", f"{commit}:{path}").encode() + b"\n"
+                    table = js_symbols.table(blob, ".ts")
                     (job / "symbols" / (oid + ".json")).write_text(json.dumps(digests(table)))
-            unit = dict(tracked=reads, seconds=1.0)
+            unit = dict(tracked=reads, seconds=1.0, exit_code=0)
             if ran:
                 unit["symbols"] = ran
-            bundle = dict(kind="lit-unit-footprints", commit=self.base,
+            bundle = dict(kind="lit-unit-footprints", commit=commit,
                           tracked={p: tracked[p] for p in reads}, units={name: unit})
             if env is not None:
                 bundle.update(environment=environment(env, []), ignored_environment=[])
-            (job / "units" / f"{i}.json").write_text(json.dumps(bundle))
+            (job / "units" / f"{commit[:8]}-{i}.json").write_text(json.dumps(bundle))
 
     def snapshot(self, heads, base=None):
         return dict(base=base or self.base,
@@ -166,6 +169,50 @@ class ShadowTests(unittest.TestCase):
         self.assertEqual(same["decision"]["stale"], [])
         moved = shadow(self.repo, self.snapshot({1: docs}), self.store, "suite", env=dict(runner, LANG="de_DE"))
         self.assertEqual(moved["decision"]["stale"], ["tests/test_a.py", "tests/test_b.py"])
+
+    def test_a_signed_record_of_the_pr_s_own_run_proves_its_tests(self):
+        proofs = Path(self.tmp.name) / "proofs"
+        one = self.commit({"src/a.py": "a = 2\n"}, self.base, "one")
+        two = self.commit({"src/b.py": "b = 2\n"}, self.base, "two")
+        # The PR's own CI ran test_a on its head; nothing ran test_b on PR 2's.
+        self.record({"tests/test_a.py": (["src/a.py", "tests/test_a.py"], None)}, commit=one, store=proofs)
+        snapshot = self.snapshot({1: one, 2: two})
+        d = shadow(self.repo, snapshot, self.store, "suite", proofs=proofs)["decision"]
+        groups = {tuple(c["members"]): c for c in d["components"]}
+        self.assertEqual(groups[(1,)]["needs"], [])
+        self.assertEqual(groups[(1,)]["by_proof"], ["tests/test_a.py"])
+        self.assertEqual(groups[(2,)]["needs"], ["tests/test_b.py"])
+        self.assertEqual(d["unrun"], [1])
+        # Without the proofs, the same batch needs both.
+        d = shadow(self.repo, snapshot, self.store, "suite")["decision"]
+        self.assertEqual(d["unrun"], [])
+
+    def test_a_proof_of_other_content_or_another_environment_proves_nothing(self):
+        proofs = Path(self.tmp.name) / "proofs"
+        one = self.commit({"src/a.py": "a = 2\n"}, self.base, "one")
+        other = self.commit({"src/a.py": "a = 9\n"}, self.base, "other")
+        self.record({"tests/test_a.py": (["src/a.py", "tests/test_a.py"], None)}, commit=other, store=proofs)
+        d = shadow(self.repo, self.snapshot({1: one}), self.store, "suite", proofs=proofs)["decision"]
+        self.assertEqual(d["components"][0]["needs"], ["tests/test_a.py"])
+        import shutil
+        shutil.rmtree(proofs)
+        runner = {"PATH": "/usr/bin"}
+        self.record({"tests/test_a.py": (["src/a.py", "tests/test_a.py"], None)}, commit=one, store=proofs,
+                    env={"PATH": "/opt/other"})
+        d = shadow(self.repo, self.snapshot({1: one}), self.store, "suite", proofs=proofs, env=runner)["decision"]
+        self.assertEqual(d["components"][0]["needs"], ["tests/test_a.py"])
+        self.assertEqual(d["components"][0]["by_proof"], [])
+
+    def test_a_failed_record_in_a_proof_store_is_not_a_certificate(self):
+        proofs = Path(self.tmp.name) / "proofs"
+        one = self.commit({"src/a.py": "a = 2\n"}, self.base, "one")
+        self.record({"tests/test_a.py": (["src/a.py", "tests/test_a.py"], None)}, commit=one, store=proofs)
+        path = next((proofs / "suite" / "units").glob("*.json"))
+        bundle = json.loads(path.read_text())
+        bundle["units"]["tests/test_a.py"]["exit_code"] = 1
+        path.write_text(json.dumps(bundle))
+        d = shadow(self.repo, self.snapshot({1: one}), self.store, "suite", proofs=proofs)["decision"]
+        self.assertEqual(d["components"][0]["needs"], ["tests/test_a.py"])
 
     def test_the_command_prints_the_decision(self):
         one = self.commit({"src/a.py": "a = 2\n"}, self.base, "one")

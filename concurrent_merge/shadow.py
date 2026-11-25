@@ -88,7 +88,7 @@ def by_file(keys):
     return out
 
 
-def program(repo, store, job, base, contents=None, env=None):
+def program(repo, store, job, base, contents=None, env=None, proofs=None):
     """Frontier's map from the store, with main set to `base`'s real content on this runner.
 
     Runner inputs (the environment, files outside the checkout) take the values this
@@ -96,7 +96,7 @@ def program(repo, store, job, base, contents=None, env=None):
     in another environment proves nothing.
     """
     contents = contents or Contents(repo)
-    f = from_store(store, job)
+    f = from_store(store, job, proofs=proofs)
     runner = runner_inputs(f.readers, env)
     f.base = {}
     for key in f.readers:
@@ -133,9 +133,13 @@ def decide(f, changes):
             )
     components = []
     for group in f.components():
+        members = set(group)
         cone = set().union(*(f.cone(c) for c in group))
+        proven = {u: f.proves(u, members) for u in cone}
         components.append(dict(
             members=group, cone=len(cone), needs=f.needs(group), overlaps=f.overlaps(group),
+            # Units only a signed proof (a PR's own CI run) proves on main plus this group.
+            by_proof=sorted(u for u, c in proven.items() if c is not None and c.source == "proof"),
         ))
     return dict(
         units=len(f.certs),
@@ -146,17 +150,23 @@ def decide(f, changes):
     )
 
 
-def shadow(repo, snapshot, store, job, receipt=None, attempts=None, env=None):
-    """The shadow decision for one snapshot; with a run's receipt, what actually passed too."""
+def shadow(repo, snapshot, store, job, receipt=None, attempts=None, env=None, proofs=None):
+    """The shadow decision for one snapshot; with a run's receipt, what actually passed too.
+
+    `proofs`: a store `concurrent-merge proof take` filled with signed records, such as
+    each PR's own CI run on its head. Only take puts records there, and only ones an
+    allowed signer signed for this repository, an expected commit and the expected image.
+    """
     contents = Contents(repo)
     base = snapshot["base"]
-    f = program(repo, store, job, base, contents, env)
+    f = program(repo, store, job, base, contents, env, proofs)
     files = by_file(f.readers)
     changes = {p["number"]: writes(repo, contents, files, base, p["head"]) for p in snapshot["changes"]}
     out = dict(
         kind="lit-shadow-decision",
         base=base,
         job=job,
+        proofs=proofs is not None,
         writes={n: sorted(w) for n, w in changes.items()},
         decision=decide(f, changes),
     )
