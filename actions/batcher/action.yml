@@ -1,0 +1,50 @@
+name: lit batcher
+description: >-
+  One pass of lit's batcher. Pins every open PR that carries the ready label and
+  passes the required check, groups them into one batch PR, and moves batches
+  through the merge queue without waiting. Run it on a schedule and after the
+  required check finishes; every pass resumes from refs in the repository.
+inputs:
+  token:
+    description: >-
+      Token that can push branches, open PRs and enqueue them. Use a GitHub App
+      token: pushes made with the workflow's own GITHUB_TOKEN start no checks.
+    required: true
+  context:
+    description: Required status a PR head must pass to be batched, such as "CI / tests"
+    required: true
+  label:
+    description: Label that marks a PR as ready to land
+    default: lit-ready
+  branch:
+    description: Branch the PRs target
+    default: main
+  repository:
+    description: owner/name of the repository
+    default: ${{ github.repository }}
+  cache-dir:
+    description: Bare Git copy lit reuses between passes (keep it on a persistent runner)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LIT_CONTEXT: ${{ inputs.context }}
+        LIT_LABEL: ${{ inputs.label }}
+        LIT_BRANCH: ${{ inputs.branch }}
+        LIT_REPOSITORY: ${{ inputs.repository }}
+        LIT_CACHE: ${{ inputs.cache-dir }}
+      run: |
+        set -euo pipefail
+        # Give git the token only for this step and only for github.com, never in a config file.
+        basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+        echo "::add-mask::$basic"
+        export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+        export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+        extra=()
+        [ -n "$LIT_CACHE" ] && extra=(--repo-dir "$LIT_CACHE")
+        python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
+          "${{ github.action_path }}/../.." intake "$LIT_REPOSITORY" \
+          --branch "$LIT_BRANCH" --context "$LIT_CONTEXT" "${extra[@]}" tick --label "$LIT_LABEL"

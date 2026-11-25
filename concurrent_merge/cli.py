@@ -641,6 +641,21 @@ def land(args):
     print(final)
 
 
+def intake_options(parser):
+    parser.add_argument("repository")
+    parser.add_argument("--branch", default="main")
+    parser.add_argument(
+        "--context", required=True, help="Required status a PR head must pass to be batched"
+    )
+    parser.add_argument(
+        "--original-prs-only",
+        action="store_true",
+        help="Queue the original PRs one by one instead of a combined batch PR",
+    )
+    parser.epilog = "Then an action: ready N..., drain [--no-wait], tick [--label L], withdraw N HEAD, report N"
+    return parser
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="concurrent-merge",
@@ -693,6 +708,11 @@ def main():
         help="Read each change's agent from its PR body (group 1 of the first match); "
         "unmatched PRs keep their GitHub login",
     )
+    intake_cmd = cmds.add_parser(
+        "intake",
+        help="Batch ready PRs ahead of GitHub's merge queue (ready, drain, tick, withdraw, report)",
+    )
+    intake_options(intake_cmd)
     preview = cmds.add_parser(
         "preview", help="Predict the combined tree before original PRs enter the queue"
     )
@@ -943,6 +963,20 @@ def main():
         type=Path,
         help="Additional Markdown to include in the PR description",
     )
+    if sys.argv[1:2] == ["intake"]:
+        # The intake has its own actions and options; this layer only names the repository.
+        q = intake_options(argparse.ArgumentParser(prog="concurrent-merge intake"))
+        known, rest = q.parse_known_args(sys.argv[2:])
+        from . import intake
+
+        intake.main(
+            rest,
+            repository=known.repository,
+            branch=known.branch,
+            context=known.context,
+            original_prs_only=known.original_prs_only,
+        )
+        return 0
     args = p.parse_args()
     try:
         if args.action == "collect":
