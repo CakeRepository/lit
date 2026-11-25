@@ -18,7 +18,7 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## Run a batch
 
-Use Python 3.12 or later, Git 2.48 or later, and an authenticated GitHub CLI for queue access. PowerShell 7 enables the native PowerShell parser. Install `weave-driver` on PATH or pass `--weave /path/to/weave-driver` before the test command. lit is tested with [Weave v0.7.1](https://github.com/Ataraxy-Labs/weave/releases/tag/v0.7.1).
+Use Python 3.12 or later and Git 2.48 or later. Collecting, testing, merging and landing need nothing else installed: lit is written with the Python standard library and plain Git, and talks to GitHub through its own small client. That client uses the token in `GH_TOKEN` or `GITHUB_TOKEN`, or else asks Git's credential helper for the GitHub host (`GITHUB_API_URL` points it at GitHub Enterprise). A few optional features still call outside tools when they are present: footprint tracing runs the job under Linux `strace`, per-function selection for JavaScript and TypeScript parses with `@babel/parser` under Bun or Node, and the .NET program map builds with the `dotnet` SDK.
 
 ```sh
 python -m pip install .
@@ -80,7 +80,7 @@ For independent PRs, lit reads the path deltas in parallel and writes the entire
 
 ## Structural merges and author agreement
 
-Git handles paths, file types, modes, and renames. For a clean concurrent content merge, lit can verify Git's exact bytes by reconstructing all disjoint input hunks. For files that need structural comparison it uses Weave on supported formats and the PowerShell parser on `.ps1`, `.psm1`, and `.psd1`. The PowerShell adapter matches functions, classes, members, named script blocks, and control-flow blocks such as if/else and try/catch. It preserves original text between declarations, checks for ambiguous identities, and parses the combined result. Applying a file resolution rebuilds only the Git directories on the affected paths.
+Git handles paths, file types, modes, and renames. For a clean concurrent content merge, lit can verify Git's exact bytes by reconstructing all disjoint input hunks. For files that need structural comparison lit has its own declaration merge: Python files (`.py`, `.pyi`, `.pyw`) are read with Python's own `ast` module, and `.ps1`, `.psm1` and `.psd1` files with PowerShell's own parser when PowerShell 7 is installed. Files in other languages keep Git's line merge, and a real overlap goes back to the change that caused it. The Python merge matches functions, classes and methods by name, including their decorators. The PowerShell adapter matches functions, classes, members, named script blocks, and control-flow blocks such as if/else and try/catch. It preserves original text between declarations, checks for ambiguous identities, and parses the combined result. Applying a file resolution rebuilds only the Git directories on the affected paths.
 
 A pending PR contributes none of its files to the candidate. Other PRs continue. Each JSON file under `batch-state/conflicts` identifies the path, Git stage blobs and modes, incoming PR revision, and participants. An author can read an input with `git -C batch.git cat-file blob OBJECT_ID`. Agents exchange proposed replacement bytes through their existing communication channel, then each records its agreement through the local adapter.
 
@@ -148,6 +148,6 @@ Run the engine regression tests with `python -m unittest discover -s tests -v`.
 
 lit is licensed under the [Apache License, Version 2.0](LICENSE). Copies and derivative works must keep the [NOTICE](NOTICE) file.
 
-## Design references
+## Inspired by
 
-Weave provides the entity merge driver. Jujutsu's conflict representation informed the persisted input stages. Graft's batch integration and Pijul's treatment of patch dependencies informed the batch and dependency handling. [Weave](https://github.com/Ataraxy-Labs/weave) · [Jujutsu conflicts](https://docs.jj-vcs.dev/latest/conflicts/) · [git-ai / graft](https://github.com/feder-cr/git-ai) · [Pijul patch theory](https://pijul.org/manual/theory.html)
+lit's code is its own. Its design was inspired by ideas from other version control work: entity-level merging in [Weave](https://github.com/Ataraxy-Labs/weave), the conflict representation in [Jujutsu](https://docs.jj-vcs.dev/latest/conflicts/), batch integration in [git-ai / graft](https://github.com/feder-cr/git-ai), and patch dependencies in [Pijul](https://pijul.org/manual/theory.html). None of their code is included, and lit does not need them installed.

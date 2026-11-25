@@ -204,11 +204,10 @@ def exact_line_union(repo, stages, blobs, expected):
 
 
 class Engine:
-    def __init__(self, repo, state, driver=None, jobs=None):
+    def __init__(self, repo, state, jobs=None):
         self.jobs = worker_count(jobs)
         self.repo = repo
         self.state = Path(state)
-        self.driver = driver
         self.owners = {}
         self.history = []
 
@@ -249,7 +248,7 @@ class Engine:
         clean_paths = {
             p
             for p in clean_paths - entries.keys() - special
-            if has_driver(p, self.driver)
+            if has_driver(p)
         }
         if clean_paths:
             bases = (
@@ -295,7 +294,7 @@ class Engine:
                         git_result = inputs.pop()
                         if exact_line_union(self.repo, stages, inputs, git_result):
                             return None
-                    content, why = resolve_file(path, inputs, self.driver)
+                    content, why = resolve_file(path, inputs)
                     if clean:
                         if content == git_result:
                             return None

@@ -5,14 +5,16 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 import time
+import zipfile
 
+from . import github
 from .blame import changed_paths, verdict
 from .inputs import verified_changes
 from .intake_audit import audit
+from .proposal import create_draft, prior_pulls
 from .engine import Engine, Repo, write_json
 from .intake_guard import (
     Ineligible,
@@ -29,10 +31,13 @@ from .intake_guard import (
 )
 
 
-def gh(*args):
-    return subprocess.check_output(
-        ["gh", *map(str, args)], text=True, encoding="utf8"
-    ).strip()
+def ready_for_review(repository, number):
+    """Take a PR out of draft; GitHub offers this only through GraphQL."""
+    node = github.rest("GET", f"repos/{repository}/pulls/{number}")["node_id"]
+    github.graphql(
+        "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}}",
+        dict(id=node),
+    )
 
 
 def enqueue(pr, head):
@@ -53,12 +58,9 @@ RECEIPT_ARTIFACTS = ("validation-timings-*", "lit-*")
 
 def run_receipts(repository, run_id, directory, patterns=RECEIPT_ARTIFACTS):
     """cached-units receipts with failed test files among a run's artifacts (none if it kept none)."""
-    args = ["run", "download", run_id, "-R", repository, "-D", directory]
-    for pattern in patterns:
-        args += ["-p", pattern]
     try:
-        gh(*args)
-    except subprocess.CalledProcessError:
+        github.download_artifacts(repository, run_id, directory, patterns)
+    except (github.GitHubError, OSError, zipfile.BadZipFile):
         return {}
     failed = {}
     for path in sorted(Path(directory).rglob("*.json")):
@@ -270,9 +272,7 @@ class Intake:
             return None
         self.fetch_commits([base, *(p["head"] for p in rows)])
         changes = verified_changes(self.repo, dict(base=base, changes=rows))
-        engine = Engine(
-            self.repo, self.repo.path / "lit-state", shutil.which("weave-driver")
-        )
+        engine = Engine(self.repo, self.repo.path / "lit-state")
         # Use the parallel engine on the entire ready list. Rebuild only when an
         # author must put a structural resolution on their own source branch.
         while changes:
@@ -291,22 +291,7 @@ class Intake:
 
     def batch_pr(self, record):
         name = batch_name(record["base"], record["tip"])
-        rows = json.loads(
-            gh(
-                "pr",
-                "list",
-                "-R",
-                self.repository,
-                "--head",
-                name,
-                "--base",
-                self.branch,
-                "--state",
-                "all",
-                "--json",
-                "number,state,headRefOid,isCrossRepository,url",
-            )
-        )
+        rows = prior_pulls(self.repository, self.branch, name)
         rows = [p for p in rows if not p["isCrossRepository"]]
         if rows:
             if len(rows) != 1 or rows[0]["headRefOid"] != record["tip"]:
@@ -323,19 +308,11 @@ class Intake:
             path = Path(directory) / "body.md"
             path.write_text(body + "\n", encoding="utf8")
             print(
-                gh(
-                    "pr",
-                    "create",
-                    "-R",
+                create_draft(
                     self.repository,
-                    "--head",
-                    name,
-                    "--base",
                     self.branch,
-                    "--draft",
-                    "--title",
+                    name,
                     "lit batch for " + numbers[:180],
-                    "--body-file",
                     path,
                 ),
                 flush=True,
@@ -457,7 +434,7 @@ class Intake:
             return True
         if "closing" in record:
             if row["state"] == "OPEN":
-                gh("pr", "close", number, "-R", self.repository)
+                github.rest("PATCH", f"repos/{self.repository}/pulls/{number}", body=dict(state="closed"))
             plan = record["closing"]
             self.finish(refs, lock, record, plan["remove"], plan["pending"])
             return True
@@ -488,7 +465,7 @@ class Intake:
             if events["repository"]["pullRequest"]["timelineItems"]["totalCount"]:
                 # A reviewer explicitly put the batch back into draft.
                 return False
-            gh("pr", "ready", number, "-R", self.repository)
+            ready_for_review(self.repository, number)
             return True
         if pr["isInMergeQueue"]:
             entry = pr.get("mergeQueueEntry") or {}
@@ -764,16 +741,12 @@ def main(argv=None, *, repository, branch="main", context, original_prs_only=Fal
         api.push([(pin_ref(args.number), args.head, "")])
         return
     if args.action == "report":
-        pr = json.loads(
-            gh(
-                "pr",
-                "view",
-                args.number,
-                "-R",
-                repository,
-                "--json",
-                "createdAt,headRefOid,headRefName,baseRefName",
-            )
+        found = github.rest("GET", f"repos/{repository}/pulls/{args.number}")
+        pr = dict(
+            createdAt=found["created_at"],
+            headRefOid=found["head"]["sha"],
+            headRefName=found["head"]["ref"],
+            baseRefName=found["base"]["ref"],
         )
         if pr["baseRefName"] != branch:
             parser.error("Batch targets a different branch")

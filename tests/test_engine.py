@@ -317,7 +317,7 @@ class BatchTests(unittest.TestCase):
         b = self.pr(2, dict.fromkeys(names, b"right"), parent=base)
         gate = threading.Barrier(2, timeout=10)
 
-        def resolve(path, blobs, driver):
+        def resolve(path, blobs):
             gate.wait()
             return b"agreed " + path.encode(), "test-driver"
 
@@ -362,10 +362,9 @@ class BatchTests(unittest.TestCase):
 
     def test_disjoint_edits_verified_without_launching_driver(self):
         source = b"A\n1\n2\n3\nZ"
-        self.base = self.commit(self.base, {"code.ts": source})
-        a = self.pr(1, {"code.ts": source.replace(b"A", b"first")})
-        b = self.pr(2, {"code.ts": source.replace(b"Z", b"last")})
-        self.engine.driver = "test-driver"
+        self.base = self.commit(self.base, {"code.py": source})
+        a = self.pr(1, {"code.py": source.replace(b"A", b"first")})
+        b = self.pr(2, {"code.py": source.replace(b"Z", b"last")})
         with patch(
             "concurrent_merge.engine.resolve_file", return_value=(None, None)
         ) as driver:
@@ -373,7 +372,7 @@ class BatchTests(unittest.TestCase):
         driver.assert_not_called()
         self.assertEqual(accepted, {1, 2})
         self.assertEqual(
-            self.repo.run("show", final + ":code.ts").stdout, b"first\n1\n2\n3\nlast"
+            self.repo.run("show", final + ":code.py").stdout, b"first\n1\n2\n3\nlast"
         )
 
     def test_delete_modify_requires_a_revised_pr(self):
@@ -501,27 +500,30 @@ class BatchTests(unittest.TestCase):
             tree=self.repo.out("rev-parse", final + "^{tree}"),
             state="AWAITING_CHECKS",
         )
-        with patch(
-            "concurrent_merge.proposal.subprocess.check_output", return_value=b"[]"
-        ) as gh:
+        with patch("concurrent_merge.proposal.prior_pulls", return_value=[]) as gh:
             propose(args, lambda *_: {**snapshot, "groups": [native]})
             self.assertEqual(gh.call_count, 1)
         self.assertFalse(remote.out("for-each-ref", "refs/heads/topic/batch"))
         url = "https://github.com/example/repo/pull/2"
-        with patch(
-            "concurrent_merge.proposal.subprocess.check_output",
-            side_effect=[b"[]", url],
-        ) as gh:
+        def graphql(query, variables=None, raise_on_errors=True):
+            if "createPullRequest" in query:
+                return dict(data=dict(createPullRequest=dict(pullRequest=dict(url=url))))
+            if "pullRequests" in query:
+                return dict(data=dict(repository=dict(pullRequests=dict(nodes=[]))))
+            return dict(data=dict(repository=dict(id="R_1")))
+
+        with patch("concurrent_merge.github.graphql", side_effect=graphql) as gh:
             propose(args, lambda *_: snapshot)
-            self.assertIn("--draft", gh.call_args.args[0])
+            create = [c for c in gh.call_args_list if "createPullRequest" in c.args[0]]
+            self.assertEqual(len(create), 1)
+            self.assertIn("draft:true", create[0].args[0].replace(" ", ""))
         self.assertEqual(remote.out("rev-parse", "refs/heads/main"), self.base)
         self.assertEqual(remote.out("rev-parse", "refs/heads/topic/batch"), final)
         existing = dict(
             isCrossRepository=False, state="OPEN", headRefOid=final, url=url
         )
         with patch(
-            "concurrent_merge.proposal.subprocess.check_output",
-            return_value=json.dumps([existing]),
+            "concurrent_merge.proposal.prior_pulls", return_value=[existing]
         ) as gh:
             propose(args, lambda *_: snapshot)
             self.assertEqual(gh.call_count, 1)

@@ -4,11 +4,11 @@ import os
 import shlex
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 
+from . import github
 from .engine import Engine, Repo, shared_clone, write_json
 from .inputs import valid_agent, verified_changes
 from .proposal import propose
@@ -24,24 +24,13 @@ def split_repository(repository):
 def graphql_pages(query, repository, branch):
     """Yield each page of a repository query, holding the target commit fixed."""
     owner, name = split_repository(repository)
-    args = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        "query=" + query,
-        "-f",
-        "owner=" + owner,
-        "-f",
-        "name=" + name,
-        "-f",
-        "branch=" + branch,
-        "-f",
-        "ref=refs/heads/" + branch,
-    ]
-    base, cursor = None, []
+    variables = dict(owner=owner, name=name, branch=branch, ref="refs/heads/" + branch)
+    base, cursor = None, None
     while True:
-        data = json.loads(subprocess.check_output(args + cursor))["data"]["repository"]
+        result = github.graphql(query, dict(variables, after=cursor))
+        data = (result.get("data") or {}).get("repository")
+        if data is None:
+            raise ValueError(f"Repository {repository} not found")
         if not data["ref"]:
             raise ValueError(f"Branch {branch} not found in {repository}")
         target = data["ref"]["target"]["oid"]
@@ -51,7 +40,7 @@ def graphql_pages(query, repository, branch):
         info = yield base, data
         if not info or not info["hasNextPage"]:
             return
-        cursor = ["-f", "after=" + info["endCursor"]]
+        cursor = info["endCursor"]
 
 
 def agent_name(body, pattern):
@@ -84,7 +73,7 @@ def queue(repository, branch, author_pattern=None):
     pages = graphql_pages(QUEUE_QUERY, repository, branch)
     try:
         base, data = next(pages)
-    except subprocess.CalledProcessError:
+    except github.GitHubError:
         # GitHub's merge queue has no REST API, so there is nothing to fall back to.
         raise ValueError(
             "Could not read the merge queue: GitHub GraphQL refused the request. "
@@ -181,20 +170,11 @@ def open_pulls_graphql(repository, branch):
 
 
 def rest(path, **query):
-    args = ["gh", "api", "-X", "GET", path]
-    for key, value in query.items():
-        args += ["-f", f"{key}={value}"]
-    return json.loads(subprocess.check_output(args))
+    return github.rest("GET", path, query)
 
 
 def rest_pages(path, **query):
-    page = 1
-    while True:
-        rows = rest(path, per_page=100, page=page, **query)
-        yield from rows
-        if len(rows) < 100:
-            return
-        page += 1
+    return github.rest_pages(path, query)
 
 
 def rest_target(owner, name, branch):
@@ -202,7 +182,7 @@ def rest_target(owner, name, branch):
         raise ValueError("Unsupported branch name")
     try:
         ref = rest(f"repos/{owner}/{name}/git/ref/heads/{branch}")
-    except subprocess.CalledProcessError:
+    except github.GitHubError:
         raise ValueError(f"Branch {branch} not found in {owner}/{name}")
     if ref["object"]["type"] != "commit":
         raise ValueError(f"Branch {branch} does not point at a commit")
@@ -263,7 +243,7 @@ def open_pulls(repository, branch, reviews=False):
     if api != "rest":
         try:
             return open_pulls_graphql(repository, branch)
-        except subprocess.CalledProcessError:
+        except github.GitHubError:
             if api == "graphql":
                 raise
             print("lit: GitHub GraphQL refused; reading PRs over REST", file=sys.stderr)
@@ -352,12 +332,7 @@ def test_snapshot(args):
     snapshot = json.loads(args.snapshot.read_text(encoding="utf8"))
     repo = Repo(args.repo)
     changes = verified_changes(repo, snapshot, args.jobs)
-    engine = Engine(
-        repo,
-        args.state,
-        str(Path(args.weave).resolve()) if args.weave else None,
-        jobs=args.jobs,
-    )
+    engine = Engine(repo, args.state, jobs=args.jobs)
     parent = args.state / "runs"
     parent.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(dir=parent, prefix="batch-"))
@@ -686,7 +661,6 @@ def main():
     preview.add_argument("--out", type=Path, required=True)
     run = cmds.add_parser("run", help="Build and test a queue snapshot locally")
     run.add_argument("snapshot", type=Path)
-    run.add_argument("--weave", default=shutil.which("weave-driver"))
     run.add_argument(
         "--jobs",
         type=int,
