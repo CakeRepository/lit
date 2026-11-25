@@ -150,7 +150,7 @@ jobs:
           context: CI / tests
 ```
 
-Use a GitHub App token: branches and PRs created with the workflow's own `GITHUB_TOKEN` start no checks. The App needs read and write access to contents, pull requests and workflows, and read access to actions, checks and commit statuses. The other intake actions are `ready N...` to pin named PRs, `drain [--no-wait]` to resume, `withdraw N HEAD` to take a pin back, and `report N` to count the workflow runs a landed batch used.
+Use a GitHub App token: branches and PRs created with the workflow's own `GITHUB_TOKEN` start no checks. The App needs read and write access to contents, pull requests and workflows, and read access to actions, checks, commit statuses and issues. The other intake actions are `ready N...` to pin named PRs, `drain [--no-wait]` to resume, `withdraw N HEAD` to take a pin back, and `report N` to count the workflow runs a landed batch used.
 
 ## Record what a test job consumed
 
@@ -177,6 +177,25 @@ concurrent-merge select units.json --workdir . --discover 'web/*.test.*' --strip
 ```
 
 With `--each`, every unit runs as its own command under its own trace, one after another. Alternatively, `--pattern REGEX --test COMMAND` traces one command and starts a unit at each process whose argument list matches the pattern, so any runner that starts one process per file works unchanged. A unit runs when it failed when recorded, when any input it read differs, or when a file matched by `--discover` has no footprint. Files that an earlier unit of the same recording wrote, such as bytecode or transpiler caches, are listed as shared state and are not treated as inputs. Running a selected subset still breaks any test that depends on what another file did first.
+
+### Signed results from other machines
+
+A machine that ran a job's files with `cached-units` can hand its passing records to CI, so the merge runs only what those records do not cover. Each proof holds the records written for one commit, the repository, the tree and the container image, and is signed with `ssh-keygen`:
+
+```sh
+concurrent-merge proof pack --store /var/lib/lit --job unit --repository OWNER/REPO --image "$IMAGE" --out proof.json.gz
+concurrent-merge proof sign proof.json.gz --key ~/.ssh/lit_proof.pub   # an ssh-agent or hardware key works
+concurrent-merge proof push proof.json.gz --remote https://github.com/OWNER/REPO.git
+```
+
+The proof is pushed as `refs/heads/lit/proof/<commit>/<id>`. CI takes every proof for the commits it is about to merge and gives the result to `cached-units --proof-store`:
+
+```sh
+concurrent-merge proof take --remote https://github.com/OWNER/REPO.git --repo . --repository OWNER/REPO \
+  --commit "$PR_HEAD" --signers-at origin/main --image "$IMAGE" --into /tmp/proofs
+```
+
+A proof counts only when an allowed signer in `.lit/allowed_signers` signed it, read from the target branch so a change cannot add the key that vouches for it. It must also be for this repository, one of the given commits and the given image, and no older than `--max-age-hours` (72 by default). `--revoked` names key fingerprints to refuse. Anything else is skipped and those files run as usual. A signature says which machine made a claim, not that the claim is true: keep signing keys on machines that run tests in the same pinned image as CI, under an account the code under test cannot use, and keep an `--audit-rate` so CI still reruns a share of what proofs cover.
 
 ## Predict a landing
 
