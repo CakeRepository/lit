@@ -524,7 +524,10 @@ def participant(pr):
 
 
 def commit_message(pr):
-    msg = f"Batch PR #{pr['number']}\n\nPull-Request: #{pr['number']}\nPR-Author: {pr['author']}\nPR-Head: {pr['head']}\n"
+    msg = f"Batch PR #{pr['number']}\n\nPull-Request: #{pr['number']}\nPR-Author: {pr['author']}\n"
+    if pr.get("login"):
+        msg += f"PR-Login: {pr['login']}\n"
+    msg += f"PR-Head: {pr['head']}\n"
     for other in pr.get("included", []):
         msg += f"Included-PR: {participant(other)}\n"
     return msg

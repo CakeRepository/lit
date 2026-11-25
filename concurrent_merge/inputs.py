@@ -5,6 +5,15 @@ import re
 from .parallel import commit_parents, ordered_map, worker_count
 
 
+def valid_agent(name):
+    """An agent name becomes a commit trailer and a vote key: one printable line."""
+    return (
+        type(name) is str
+        and bool(name.strip())
+        and bool(re.fullmatch(r"[^\x00-\x1f\x7f]{1,100}", name))
+    )
+
+
 def verified_changes(repo, snapshot, jobs=None):
     jobs = worker_count(jobs)
     if repo.out("rev-parse", "--is-bare-repository") != "true":
@@ -19,9 +28,15 @@ def verified_changes(repo, snapshot, jobs=None):
             type(p["number"]) is not int
             or p["number"] <= 0
             or p["number"] in changes
-            or not p["author"]
+            or not valid_agent(p["author"])
         ):
             raise ValueError("Invalid or duplicate PR in snapshot")
+        if (agent := row.get("agent")) is not None:
+            # Several agents may share one login; the agent is who gets the change back.
+            if not valid_agent(agent):
+                raise ValueError(f"Invalid agent for PR #{p['number']} in snapshot")
+            if agent.strip() != p["author"]:
+                p["login"], p["author"] = p["author"], agent.strip()
         by_head.setdefault(p["head"], set()).add(p["number"])
         changes[p["number"]] = p
     oids = by_head.keys() | {base}
