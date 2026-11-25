@@ -3,6 +3,7 @@
 from contextlib import ExitStack
 from hashlib import sha256
 import mmap
+import struct
 from statistics import median
 from time import perf_counter
 
@@ -13,43 +14,58 @@ LEAF_ENTRIES = 16_384
 FANOUT = 256
 
 
-def build_index(values, jobs):
-    import numpy as np
+def count_mismatches(left, right, begin, end):
+    """Exact count of differing uint32 entries in [begin, end), standard library only.
 
-    leaves = (len(values) + LEAF_ENTRIES - 1) // LEAF_ENTRIES
+    Equal byte ranges are skipped with a memcmp-speed comparison; differing ranges
+    are bisected down to a small run that is compared entry by entry.
+    """
+    if left[begin * 4 : end * 4] == right[begin * 4 : end * 4]:
+        return 0
+    if end - begin <= 64:
+        a = struct.unpack_from(f"<{end - begin}I", left, begin * 4)
+        b = struct.unpack_from(f"<{end - begin}I", right, begin * 4)
+        return sum(x != y for x, y in zip(a, b))
+    mid = (begin + end) // 2
+    return count_mismatches(left, right, begin, mid) + count_mismatches(
+        left, right, mid, end
+    )
+
+
+def build_index(values, size, jobs):
+    leaves = (size + LEAF_ENTRIES - 1) // LEAF_ENTRIES
     groups = (leaves + FANOUT - 1) // FANOUT
-    digests = np.empty(leaves, dtype="V32")
+    view = memoryview(values)
+    digests = [b""] * leaves
 
     def hash_group(group):
         start = group * FANOUT
         end = min(start + FANOUT, leaves)
         for leaf in range(start, end):
-            begin = leaf * LEAF_ENTRIES
-            digests[leaf] = sha256(values[begin : begin + LEAF_ENTRIES]).digest()
-        return sha256(digests[start:end]).digest()
+            begin = leaf * LEAF_ENTRIES * 4
+            digests[leaf] = sha256(view[begin : begin + LEAF_ENTRIES * 4]).digest()
+        return sha256(b"".join(digests[start:end])).digest()
 
-    roots = np.array(ordered_map(hash_group, list(range(groups)), jobs), dtype="V32")
+    roots = ordered_map(hash_group, list(range(groups)), jobs)
     return roots, digests
 
 
-def indexed_count(left, right, a, b):
-    import numpy as np
-
+def indexed_count(left, right, size, a, b):
     total = 0
-    for group in np.flatnonzero(a[0] != b[0]):
+    for group, (ra, rb) in enumerate(zip(a[0], b[0])):
+        if ra == rb:
+            continue
         first = group * FANOUT
-        group_leaves = slice(first, first + FANOUT)
-        changed = np.flatnonzero(a[1][group_leaves] != b[1][group_leaves])
-        for leaf in first + changed:
-            begin = leaf * LEAF_ENTRIES
-            chunk = slice(begin, begin + LEAF_ENTRIES)
-            total += np.count_nonzero(left[chunk] != right[chunk])
+        for leaf in range(first, min(first + FANOUT, len(a[1]))):
+            if a[1][leaf] != b[1][leaf]:
+                begin = leaf * LEAF_ENTRIES
+                total += count_mismatches(
+                    left, right, begin, min(begin + LEAF_ENTRIES, size)
+                )
     return total
 
 
 def benchmark_indexed(names, size, jobs, repeats, expected_count):
-    import numpy as np
-
     with ExitStack() as stack:
         inputs = []
         for name in names:
@@ -59,18 +75,19 @@ def benchmark_indexed(names, size, jobs, repeats, expected_count):
             mapping = stack.enter_context(
                 mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
             )
-            inputs.append(np.ndarray((size,), dtype=np.uint32, buffer=mapping))
+            inputs.append(mapping)
         left, right = inputs
         start = perf_counter()
-        a, b = (build_index(values, jobs) for values in inputs)
+        a, b = (build_index(values, size, jobs) for values in inputs)
         setup = perf_counter() - start
 
         def count_range(bounds):
             begin, end = bounds
             total = 0
             for start in range(begin, end, 1_000_000):
-                chunk = slice(start, min(start + 1_000_000, end))
-                total += np.count_nonzero(left[chunk] != right[chunk])
+                total += count_mismatches(
+                    left, right, start, min(start + 1_000_000, end)
+                )
             return total
 
         def full_scan(workers):
@@ -82,7 +99,7 @@ def benchmark_indexed(names, size, jobs, repeats, expected_count):
         methods = {
             "full_one_worker": lambda: full_scan(1),
             "full_parallel": lambda: full_scan(jobs),
-            "indexed": lambda: indexed_count(left, right, a, b),
+            "indexed": lambda: indexed_count(left, right, size, a, b),
         }
         timings = {name: [] for name in methods}
         # Warm each path once, then rotate the measured order. Both methods
@@ -103,7 +120,7 @@ def benchmark_indexed(names, size, jobs, repeats, expected_count):
         return dict(
             leaf_entries=LEAF_ENTRIES,
             fanout=FANOUT,
-            index_bytes_per_snapshot=sum(level.nbytes for level in a),
+            index_bytes_per_snapshot=len(a[0]) * 32 + len(a[1]) * 32,
             build_both_indexes_seconds=setup,
             comparisons_seconds=timings,
             medians_seconds=medians,

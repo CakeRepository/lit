@@ -1,6 +1,7 @@
 [build-system]
-requires = ["setuptools>=69"]
-build-backend = "setuptools.build_meta"
+requires = []
+build-backend = "lit_build"
+backend-path = ["build_backend"]
 
 [project]
 name = "concurrent-merge-engine"
@@ -13,8 +14,6 @@ license = {file = "LICENSE"}
 [project.scripts]
 concurrent-merge = "concurrent_merge.cli:main"
 
-[tool.setuptools]
-packages = ["concurrent_merge"]
-
-[tool.setuptools.package-data]
-concurrent_merge = ["ps_nodes.ps1", "dotnet/*.cs", "dotnet/*.csproj"]
+[tool.lit_build]
+package = "concurrent_merge"
+package-data = ["ps_nodes.ps1", "ts_decls.mjs", "dotnet/*.cs", "dotnet/*.csproj"]

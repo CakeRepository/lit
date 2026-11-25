@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from concurrent_merge.engine import Repo
+from concurrent_merge.github import GitHubError
 from concurrent_merge.intake import Intake, member_changes, run_receipts, split_failed
 
 MEMBERS = [[1, "a"], [2, "b"], [3, "c"], [4, "d"]]
@@ -76,21 +77,21 @@ class ChainTests(unittest.TestCase):
 
 class ReceiptTests(unittest.TestCase):
     def test_failed_reads_come_from_receipts_among_the_run_artifacts(self):
-        def download(*args):
-            out = Path(args[args.index("-D") + 1])
+        def download(repository, run_id, directory, patterns):
+            out = Path(directory)
             (out / "validation-timings-1-portal" / "portal-shards").mkdir(parents=True)
             receipt = dict(job="portal", failed_reads={"a.test.ts": dict(tracked=["a.ts"])})
             (out / "validation-timings-1-portal" / "portal-shards" / "lit-shard-1.json").write_text(json.dumps(receipt))
             (out / "validation-timings-1-portal" / "timings.json").write_text(json.dumps(dict(seconds=3)))
             return ""
 
-        with tempfile.TemporaryDirectory() as d, patch("concurrent_merge.intake.gh", side_effect=download) as gh:
+        with tempfile.TemporaryDirectory() as d, patch("concurrent_merge.github.download_artifacts", side_effect=download) as gh:
             self.assertEqual(run_receipts("o/r", "42", d), {"a.test.ts": dict(tracked=["a.ts"])})
-            self.assertIn("validation-timings-*", gh.call_args.args)
+            self.assertIn("validation-timings-*", gh.call_args.args[3])
 
     def test_a_run_without_artifacts_gives_no_receipts(self):
-        error = subprocess.CalledProcessError(1, "gh")
-        with tempfile.TemporaryDirectory() as d, patch("concurrent_merge.intake.gh", side_effect=error):
+        error = GitHubError("no artifact matches the given patterns")
+        with tempfile.TemporaryDirectory() as d, patch("concurrent_merge.github.download_artifacts", side_effect=error):
             self.assertEqual(run_receipts("o/r", "42", d), {})
 
 

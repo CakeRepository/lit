@@ -1,12 +1,16 @@
-"""Conservative three-way merge of PowerShell syntax extents, and Weave adapter."""
+"""Conservative three-way merge of declaration extents, for Python and PowerShell sources.
 
+Both merges are lit's own: Python files are parsed with the standard library's
+`ast`, PowerShell files with PowerShell's own parser. A file in any other
+language keeps Git's line merge.
+"""
+
+import ast
 import codecs
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
 
 
 def choose(base, ours, theirs):
@@ -112,45 +116,61 @@ def powershell_merge(blobs):
     return prefix + text.encode(enc) if ps_parse([text]) is not None else None
 
 
+def python_tree(blob):
+    """(raw, root) extent tree of a Python file's definitions, or None if it does not parse.
+
+    A node is a def, async def or class, keyed by kind and name, and spans whole
+    lines from its first decorator to its last line. Compound statements never
+    share a line, so line extents never overlap a sibling.
+    """
+    try:
+        module = ast.parse(blob)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+    starts = [0]
+    for line in blob.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    kinds = {ast.FunctionDef: "def", ast.AsyncFunctionDef: "async def", ast.ClassDef: "class"}
+
+    def nodes(parent):
+        found = []
+        for child in ast.iter_child_nodes(parent):
+            kind = kinds.get(type(child))
+            if kind is None:
+                found.extend(nodes(child))
+                continue
+            first = min([child.lineno, *(d.lineno for d in child.decorator_list)])
+            found.append(
+                (f"{kind} {child.name}", starts[first - 1], starts[child.end_lineno], nodes(child))
+            )
+        return sorted(found, key=lambda n: n[1])
+
+    return blob, ("<file>", 0, len(blob), nodes(module))
+
+
+def python_merge(blobs):
+    trees = [python_tree(blob) for blob in blobs]
+    if None in trees:
+        return None
+    merged = merge_extent(trees)
+    return merged if merged is not None and python_tree(merged) is not None else None
+
+
 PS_FILES = {".ps1", ".psm1", ".psd1"}
-WEAVE_FILES = set(
-    (
-        ".ts .tsx .js .mjs .cjs .jsx .py .go .rs .java .c .h .cc .cpp .hpp .rb .cs .php .swift "
-        ".kt .kts .scala .dart .ex .exs .sh .bash .fish .f90 .pl .ml .zig .elm .clj .edn .d .lua "
-        ".nix .sql .hcl .tf .tex .xml .json .yaml .yml .toml .csv .md"
-    ).split()
-)
+PY_FILES = {".py", ".pyi", ".pyw"}
 
 
-def has_driver(path, driver):
+def has_driver(path):
     suffix = Path(path).suffix.lower()
-    return (suffix in WEAVE_FILES and bool(driver)) or (
-        suffix in PS_FILES and bool(shutil.which("pwsh"))
-    )
+    return suffix in PY_FILES or (suffix in PS_FILES and bool(shutil.which("pwsh")))
 
 
-def resolve_file(path, blobs, driver):
+def resolve_file(path, blobs):
     suffix = Path(path).suffix.lower()
     if suffix in PS_FILES:
         merged = powershell_merge(blobs)
         return (merged, "powershell-ast") if merged is not None else (None, None)
-    if (
-        not driver
-        or suffix not in WEAVE_FILES
-        or any(b"\x00" in blob for blob in blobs)
-    ):
-        return None, None
-    with tempfile.TemporaryDirectory() as directory:
-        paths = [Path(directory, name + suffix) for name in ("base", "ours", "theirs")]
-        for target, blob in zip(paths, blobs):
-            target.write_bytes(blob)
-        proc = subprocess.run(
-            [driver, *paths, "7", "source" + suffix],
-            cwd=directory,
-            env={**os.environ, "WEAVE_EVENT": "1"},
-            capture_output=True,
-        )
-        if proc.returncode in (1, 2):
-            return None, None
-        proc.check_returncode()
-        return paths[1].read_bytes(), "weave"
+    if suffix in PY_FILES:
+        merged = python_merge(blobs)
+        return (merged, "python-ast") if merged is not None else (None, None)
+    return None, None

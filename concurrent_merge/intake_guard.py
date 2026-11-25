@@ -1,10 +1,8 @@
 """Read-only verification shared by the intake client and the protected merge check."""
 
-import json
-import os
 import re
-import subprocess
-import urllib.request
+
+from . import github
 
 
 PREFIX = "codex/ci/lit-v1/"
@@ -31,24 +29,7 @@ class SourceResolution(Ineligible):
 
 
 def graphql(query, variables):
-    payload = json.dumps(dict(query=query, variables=variables)).encode()
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        request = urllib.request.Request(
-            os.environ["GITHUB_GRAPHQL_URL"],
-            data=payload,
-            headers={
-                "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            result = json.load(response)
-    else:
-        result = json.loads(
-            subprocess.check_output(
-                ["gh", "api", "graphql", "--input", "-"], input=payload
-            )
-        )
+    result = github.graphql(query, variables, raise_on_errors=False)
     if result.get("errors") or not result.get("data"):
         raise RuntimeError("GitHub could not verify intake state")
     return result["data"]

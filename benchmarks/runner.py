@@ -1,11 +1,13 @@
 """Single-runner merge benchmark. Run as python -m benchmarks.runner."""
 
 import argparse
+from array import array
 from contextlib import nullcontext
 import json
 from pathlib import Path
 from statistics import median
 import subprocess
+import sys
 import tempfile
 from time import perf_counter
 from unittest.mock import patch
@@ -88,9 +90,8 @@ def benchmark_merge(tmp, args):
 
 def benchmark_raw(tmp, args):
     # A bandwidth reference for unindexed positional comparison. Inputs are
-    # distinct on-disk arrays. NumPy is only needed for this benchmark.
-    import numpy as np
-    from benchmarks.indexed_diff import benchmark_indexed
+    # distinct on-disk arrays. Standard library only.
+    from benchmarks.indexed_diff import benchmark_indexed, count_mismatches
 
     block = 1_000_000
     size = args.raw_entries
@@ -100,12 +101,16 @@ def benchmark_raw(tmp, args):
     with names[0].open("wb") as left, names[1].open("wb") as right:
         for offset in range(0, size, block):
             n = min(block, size - offset)
-            values = np.arange(offset, offset + n, dtype=np.uint32)
-            values.tofile(left)
+            values = array("I", range(offset, offset + n))
+            if values.itemsize != 4:
+                raise RuntimeError("Expected a 4-byte unsigned array typecode")
+            if sys.byteorder != "little":
+                values.byteswap()
+            left.write(values.tobytes())
             for i in mistakes:
                 if offset <= i < offset + n:
-                    values[i - offset] ^= np.uint32(1)
-            values.tofile(right)
+                    values[i - offset] ^= 1
+            right.write(values.tobytes())
     setup = perf_counter() - start
 
     def scan(bounds):
@@ -116,11 +121,11 @@ def benchmark_raw(tmp, args):
             right.seek(begin * 4)
             for i in range(begin, end, block):
                 n = min(block, end - i)
-                a = np.fromfile(left, dtype=np.uint32, count=n)
-                b = np.fromfile(right, dtype=np.uint32, count=n)
-                if len(a) != n or len(b) != n:
+                a = left.read(n * 4)
+                b = right.read(n * 4)
+                if len(a) != n * 4 or len(b) != n * 4:
                     raise ValueError("Incomplete benchmark input")
-                total += np.count_nonzero(a != b)
+                total += count_mismatches(a, b, 0, n)
         return total
 
     times = {j: [] for j in {1, args.jobs}}
@@ -141,10 +146,6 @@ def benchmark_raw(tmp, args):
             names, size, args.jobs, args.repeats, len(mistakes)
         ),
     )
-    if args.gpu:
-        from benchmarks.gpu_compare import benchmark_gpu
-
-        result["gpu"] = benchmark_gpu(names, size, args.repeats, len(mistakes))
     return result
 
 
@@ -154,11 +155,6 @@ def main():
     p.add_argument("--prs", type=int, default=64)
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--repeats", type=int, default=3)
-    p.add_argument(
-        "--gpu",
-        action="store_true",
-        help="Also time a CUDA scan of the same uint32 snapshots. Requires a CUDA build of PyTorch.",
-    )
     p.add_argument(
         "--raw-entries",
         type=int,
@@ -171,8 +167,6 @@ def main():
         help="Parent for the temporary Git repository and optional arrays",
     )
     args = p.parse_args()
-    if args.gpu and not args.raw_entries:
-        p.error("--gpu requires --raw-entries")
     if (
         not 2 <= args.prs <= args.width
         or min(args.jobs, args.repeats) < 1

@@ -3,10 +3,10 @@
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 
+from . import github
 from .engine import Repo, parse_merge
 
 
@@ -100,36 +100,38 @@ def graphql_allowed():
     return api
 
 
+PRIOR_QUERY = """query($owner:String!,$name:String!,$base:String!,$head:String!){
+  repository(owner:$owner,name:$name){pullRequests(baseRefName:$base,headRefName:$head,
+    states:[OPEN,CLOSED,MERGED],first:100){nodes{number state headRefOid isCrossRepository url}}}}"""
+
+CREATE_QUERY = """mutation($repo:ID!,$base:String!,$head:String!,$title:String!,$body:String!){
+  createPullRequest(input:{repositoryId:$repo,baseRefName:$base,headRefName:$head,
+    title:$title,body:$body,draft:true}){pullRequest{url}}}"""
+
+
 def prior_pulls(repository, branch, head):
-    """Earlier PRs from this topic branch, as `gh pr list --json` reports them."""
+    """Earlier PRs from this topic branch: number, state, headRefOid, isCrossRepository, url."""
     api = graphql_allowed()
     if api != "rest":
         try:
-            return json.loads(
-                subprocess.check_output(
-                    [
-                        "gh", "pr", "list", "--repo", repository, "--base", branch,
-                        "--head", head, "--state", "all",
-                        "--json", "state,headRefOid,isCrossRepository,url",
-                    ]
-                )
+            owner, name = repository.split("/")
+            found = github.graphql(
+                PRIOR_QUERY, dict(owner=owner, name=name, base=branch, head=head)
             )
-        except subprocess.CalledProcessError:
+            return found["data"]["repository"]["pullRequests"]["nodes"]
+        except github.GitHubError:
             if api == "graphql":
                 raise
             print("lit: GitHub GraphQL refused; reading PRs over REST", file=sys.stderr)
     owner = repository.split("/")[0]
-    rows = json.loads(
-        subprocess.check_output(
-            [
-                "gh", "api", "-X", "GET", f"repos/{repository}/pulls",
-                "-f", f"head={owner}:{head}", "-f", f"base={branch}",
-                "-f", "state=all", "-f", "per_page=100",
-            ]
-        )
+    rows = github.rest(
+        "GET",
+        f"repos/{repository}/pulls",
+        dict(head=f"{owner}:{head}", base=branch, state="all", per_page=100),
     )
     return [
         dict(
+            number=p["number"],
             state="MERGED" if p.get("merged_at") else p["state"].upper(),
             headRefOid=p["head"]["sha"],
             isCrossRepository=((p["head"].get("repo") or {}).get("full_name") != repository),
@@ -142,28 +144,27 @@ def prior_pulls(repository, branch, head):
 
 def create_draft(repository, branch, head, title, body_path):
     api = graphql_allowed()
+    body = Path(body_path).read_text(encoding="utf8")
     if api != "rest":
         try:
-            return subprocess.check_output(
-                [
-                    "gh", "pr", "create", "--repo", repository, "--base", branch,
-                    "--head", head, "--draft", "--title", title,
-                    "--body-file", str(body_path),
-                ],
-                text=True,
-            ).strip()
-        except subprocess.CalledProcessError:
+            owner, name = repository.split("/")
+            repo_id = github.graphql(
+                "query($o:String!,$n:String!){repository(owner:$o,name:$n){id}}",
+                dict(o=owner, n=name),
+            )["data"]["repository"]["id"]
+            made = github.graphql(
+                CREATE_QUERY,
+                dict(repo=repo_id, base=branch, head=head, title=title, body=body),
+            )
+            return made["data"]["createPullRequest"]["pullRequest"]["url"]
+        except github.GitHubError:
             if api == "graphql":
                 raise
             print("lit: GitHub GraphQL refused; opening the PR over REST", file=sys.stderr)
-    created = json.loads(
-        subprocess.check_output(
-            [
-                "gh", "api", "-X", "POST", f"repos/{repository}/pulls",
-                "-f", f"title={title}", "-f", f"head={head}", "-f", f"base={branch}",
-                "-F", "draft=true", "-F", f"body=@{body_path}",
-            ]
-        )
+    created = github.rest(
+        "POST",
+        f"repos/{repository}/pulls",
+        body=dict(title=title, head=head, base=branch, draft=True, body=body),
     )
     return created["html_url"]
 

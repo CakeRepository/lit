@@ -4,10 +4,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
 from concurrent_merge import cli
+from concurrent_merge.github import GitHubError
 from concurrent_merge.engine import Engine, Repo, commit_message
 from concurrent_merge.inputs import verified_changes
 from concurrent_merge.proposal import propose
@@ -39,14 +41,14 @@ def review(login, oid, state="APPROVED"):
 
 
 class FakeGitHub:
-    """Answers `gh api graphql` with fixed pages and records each request."""
+    """Answers GraphQL requests with fixed pages and records each request."""
 
     def __init__(self, pages, base=BASE, key="pullRequests"):
         self.pages, self.base, self.key, self.calls = pages, base, key, []
 
-    def __call__(self, args):
-        self.calls.append(args)
-        after = next((a[6:] for a in args if a.startswith("after=")), None)
+    def __call__(self, query, variables=None, raise_on_errors=True):
+        self.calls.append(variables)
+        after = (variables or {}).get("after")
         index = int(after) if after else 0
         nodes = self.pages[index]
         info = dict(hasNextPage=index + 1 < len(self.pages), endCursor=str(index + 1))
@@ -59,14 +61,12 @@ class FakeGitHub:
             ]
             body = dict(mergeQueue=dict(entries=dict(pageInfo=info, nodes=entries)))
         base = self.base(index) if callable(self.base) else self.base
-        return json.dumps(
-            dict(data=dict(repository=dict(ref=dict(target=dict(oid=base)), **body)))
-        ).encode()
+        return dict(data=dict(repository=dict(ref=dict(target=dict(oid=base)), **body)))
 
 
 def collect(pages, selection, pattern=None, **fake):
     github = FakeGitHub(pages, **fake)
-    with patch.object(cli.subprocess, "check_output", github):
+    with patch.object(cli.github, "graphql", github):
         return cli.collect("owner/repo", "main", selection, pattern), github
 
 
@@ -136,10 +136,10 @@ class CollectWithoutMergeQueueTests(unittest.TestCase):
             )
 
     def test_no_merge_queue_points_at_the_other_rules(self):
-        missing = lambda args: json.dumps(
-            dict(data=dict(repository=dict(ref=dict(target=dict(oid=BASE)), mergeQueue=None)))
-        ).encode()
-        with patch.object(cli.subprocess, "check_output", missing):
+        missing = lambda *a, **k: dict(
+            data=dict(repository=dict(ref=dict(target=dict(oid=BASE)), mergeQueue=None))
+        )
+        with patch.object(cli.github, "graphql", missing):
             with self.assertRaisesRegex(ValueError, "--prs, --label or --min-reviews"):
                 cli.collect("owner/repo", "main")
 
@@ -166,33 +166,41 @@ def rest_pr(number, head=None, **extra):
 
 
 class FakeREST:
-    """Refuses GraphQL the way a proxy does and answers `gh api -X GET` REST paths."""
+    """Refuses GraphQL the way a proxy does and answers REST GET paths."""
 
     def __init__(self, pulls, reviews=None, targets=(BASE,)):
         self.pulls, self.reviews = pulls, reviews or {}
         self.targets, self.calls = list(targets), []
 
-    def __call__(self, args):
-        self.calls.append(args)
-        if args[2] == "graphql":
-            raise subprocess.CalledProcessError(1, args, b"GraphQL is not available")
-        path = args[4]
-        query = dict(a.split("=", 1) for a in args[5:] if "=" in a)
+    def graphql(self, query, variables=None, raise_on_errors=True):
+        self.calls.append(["graphql"])
+        raise GitHubError("GraphQL is not available", 403)
+
+    def rest(self, method, path, query=None, body=None):
+        self.calls.append([method, path])
+        assert method == "GET"
+        query = query or {}
         if path.endswith("/git/ref/heads/main"):
             oid = self.targets.pop(0) if len(self.targets) > 1 else self.targets[0]
-            return json.dumps(dict(object=dict(sha=oid, type="commit"))).encode()
+            return dict(object=dict(sha=oid, type="commit"))
         if "/git/ref/heads/" in path:
-            raise subprocess.CalledProcessError(1, args, b"Not Found")
+            raise GitHubError("Not Found", 404)
         rows = self.pulls if path.endswith("/pulls") else self.reviews[int(path.split("/")[4])]
         if path.endswith("/pulls"):
             assert query["state"] == "open" and query["base"] == "main", query
         size, page = int(query["per_page"]), int(query["page"])
-        return json.dumps(rows[(page - 1) * size : page * size]).encode()
+        return rows[(page - 1) * size : page * size]
+
+    def patched(self):
+        stack = ExitStack()
+        stack.enter_context(patch.object(cli.github, "graphql", self.graphql))
+        stack.enter_context(patch.object(cli.github, "rest", self.rest))
+        return stack
 
 
 def rest_collect(fake, selection, pattern=None, api=None):
     env = {"LIT_GITHUB_API": api} if api else {}
-    with patch.object(cli.subprocess, "check_output", fake), patch.dict(cli.os.environ, env):
+    with fake.patched(), patch.dict(cli.os.environ, env):
         with patch("sys.stderr"):
             return cli.collect("owner/repo", "main", selection, pattern)
 
@@ -215,14 +223,14 @@ class RestFallbackTests(unittest.TestCase):
             [dict(number=1, head=f"{1:040x}", author="shared-bot", agent="agent-a")],
         )
         self.assertEqual(snapshot["selection"], {"label": "lit-ready"})
-        self.assertEqual(fake.calls[0][2], "graphql")
-        self.assertFalse(any("/reviews" in " ".join(c) for c in fake.calls))
+        self.assertEqual(fake.calls[0][0], "graphql")
+        self.assertFalse(any("/reviews" in c[-1] for c in fake.calls))
 
     def test_rest_pages_through_every_open_pr(self):
         fake = FakeREST([rest_pr(n) for n in range(1, 151)])
         snapshot = rest_collect(fake, cli.selection_of([2, 150]), api="rest")
         self.assertEqual([c["number"] for c in snapshot["changes"]], [2, 150])
-        self.assertFalse(any(c[2] == "graphql" for c in fake.calls))
+        self.assertFalse(any(c[0] == "graphql" for c in fake.calls))
         with self.assertRaisesRegex(ValueError, "Not open against main: #151"):
             rest_collect(FakeREST([rest_pr(1)]), cli.selection_of([1, 151]), api="rest")
 
@@ -251,20 +259,18 @@ class RestFallbackTests(unittest.TestCase):
 
     def test_missing_branch_over_rest(self):
         fake = FakeREST([rest_pr(1)])
-        with patch.object(cli.subprocess, "check_output", fake), patch.dict(
-            cli.os.environ, {"LIT_GITHUB_API": "rest"}
-        ):
+        with fake.patched(), patch.dict(cli.os.environ, {"LIT_GITHUB_API": "rest"}):
             with self.assertRaisesRegex(ValueError, "Branch dev not found"):
                 cli.collect("owner/repo", "dev", cli.selection_of([1]))
 
     def test_graphql_only_does_not_fall_back(self):
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaises(GitHubError):
             rest_collect(FakeREST([rest_pr(1)]), cli.selection_of([1]), api="graphql")
         with self.assertRaisesRegex(ValueError, "LIT_GITHUB_API"):
             rest_collect(FakeREST([]), cli.selection_of([1]), api="soap")
 
     def test_merge_queue_without_graphql_points_at_rest_rules(self):
-        with patch.object(cli.subprocess, "check_output", FakeREST([])):
+        with FakeREST([]).patched():
             with self.assertRaisesRegex(ValueError, "also work over REST"):
                 cli.collect("owner/repo", "main")
 
@@ -286,7 +292,7 @@ class AgentOverrideTests(unittest.TestCase):
 
     def test_pattern_applies_to_the_merge_queue_too(self):
         github = FakeGitHub([[pr(5, body="Agents Hangout bot: Ribbit Red Velvet")]], key="queue")
-        with patch.object(cli.subprocess, "check_output", github):
+        with patch.object(cli.github, "graphql", github):
             snapshot = cli.queue("owner/repo", "main", self.PATTERN)
         self.assertEqual(snapshot["changes"][0]["agent"], "Ribbit Red Velvet")
 
@@ -414,13 +420,16 @@ class AgentInSnapshotTests(unittest.TestCase):
 
         bodies = []
 
-        def gh(argv, **_):
-            if "create" in argv:
-                bodies.append(Path(argv[argv.index("--body-file") + 1]).read_text())
-                return "https://github.com/owner/repo/pull/9"
-            return b"[]"
+        def graphql(query, variables=None, raise_on_errors=True):
+            if "createPullRequest" in query:
+                self.assertIn("draft:true", query.replace(" ", ""))
+                bodies.append(variables["body"])
+                return dict(data=dict(createPullRequest=dict(pullRequest=dict(url="https://github.com/owner/repo/pull/9"))))
+            if "pullRequests" in query:
+                return dict(data=dict(repository=dict(pullRequests=dict(nodes=[]))))
+            return dict(data=dict(repository=dict(id="R_1")))
 
-        with patch("concurrent_merge.proposal.subprocess.check_output", side_effect=gh):
+        with patch("concurrent_merge.github.graphql", side_effect=graphql):
             with patch("sys.stdout"):
                 propose(args, live)
         self.assertEqual(reads, [{"prs": [7]}])
@@ -438,25 +447,27 @@ class AgentInSnapshotTests(unittest.TestCase):
         args, snapshot, remote, final = self.proposable()
         calls = []
 
-        def gh(argv, **_):
-            calls.append(argv)
-            if argv[:2] == ["gh", "pr"]:
-                raise subprocess.CalledProcessError(1, argv, b"GraphQL is not available")
-            if "GET" in argv:
-                other = dict(head=dict(ref="lit/batch-10", sha="e" * 40, repo=dict(full_name="owner/repo")),
-                             state="open", html_url="x", merged_at=None)
-                return json.dumps([other]).encode()
-            body = next(a for a in argv if a.startswith("body=@"))[6:]
-            self.assertIn("lit combined #7 for review.", Path(body).read_text())
-            self.assertIn("draft=true", argv)
-            self.assertIn("head=lit/batch-1", argv)
-            return json.dumps(dict(html_url="https://github.com/owner/repo/pull/9")).encode()
+        def graphql(query, variables=None, raise_on_errors=True):
+            calls.append(["graphql"])
+            raise GitHubError("GraphQL is not available", 403)
 
-        with patch("concurrent_merge.proposal.subprocess.check_output", side_effect=gh):
-            with patch("sys.stdout") as out, patch("sys.stderr"):
-                propose(args, lambda *_: snapshot)
-        self.assertEqual([c[2] for c in calls], ["list", "-X", "create", "-X"])
-        self.assertIn("head=owner:lit/batch-1", calls[1])
+        def rest(method, path, query=None, body=None):
+            calls.append([method, path, query, body])
+            if method == "GET":
+                other = dict(number=10, head=dict(ref="lit/batch-10", sha="e" * 40, repo=dict(full_name="owner/repo")),
+                             state="open", html_url="x", merged_at=None)
+                return [other]
+            self.assertIn("lit combined #7 for review.", body["body"])
+            self.assertIs(body["draft"], True)
+            self.assertEqual(body["head"], "lit/batch-1")
+            return dict(html_url="https://github.com/owner/repo/pull/9")
+
+        with patch("concurrent_merge.github.graphql", side_effect=graphql):
+            with patch("concurrent_merge.github.rest", side_effect=rest):
+                with patch("sys.stdout") as out, patch("sys.stderr"):
+                    propose(args, lambda *_: snapshot)
+        self.assertEqual([c[0] for c in calls], ["graphql", "GET", "graphql", "POST"])
+        self.assertEqual(calls[1][2]["head"], "owner:lit/batch-1")
         self.assertEqual(remote.out("rev-parse", "refs/heads/lit/batch-1"), final)
         printed = "".join(c.args[0] for c in out.write.call_args_list)
         self.assertIn("https://github.com/owner/repo/pull/9", printed)

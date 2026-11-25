@@ -1,16 +1,32 @@
 """Account for GitHub Actions attempts during one admission window."""
 
 from datetime import datetime, timezone
-import json
 import re
-import subprocess
 from urllib.parse import urlencode
 
+from . import github
 from .intake_guard import graphql
 
 
 def api(path):
-    return json.loads(subprocess.check_output(["gh", "api", path]))
+    return github.rest("GET", path)
+
+
+VIEW_QUERY = """query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){
+  pullRequest(number:$number){state mergeCommit{oid} mergedAt url headRefName
+    commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename
+      ... on CheckRun{detailsUrl} ... on StatusContext{targetUrl}}}}}}}}}}"""
+
+
+def pull_view(repository, number):
+    """state, mergeCommit, mergedAt, statusCheckRollup, url and headRefName of a PR."""
+    owner, name = repository.split("/")
+    data = graphql(VIEW_QUERY, dict(owner=owner, name=name, number=int(number)))
+    found = data["repository"]["pullRequest"]
+    commits = found.pop("commits")["nodes"]
+    rollup = ((commits[0]["commit"] if commits else {}).get("statusCheckRollup") or {})
+    found["statusCheckRollup"] = (rollup.get("contexts") or {}).get("nodes", [])
+    return found
 
 
 def attempts(runs, members, wrapper):
@@ -154,20 +170,7 @@ def audit(repository, wrapper, members, since, *, heads=None, context=None):
         created=created,
     )
     selected = attempts(runs, members, wrapper)
-    pr = json.loads(
-        subprocess.check_output(
-            [
-                "gh",
-                "pr",
-                "view",
-                str(wrapper),
-                "-R",
-                repository,
-                "--json",
-                "state,mergeCommit,mergedAt,statusCheckRollup,url,headRefName",
-            ]
-        )
-    )
+    pr = pull_view(repository, wrapper)
     merge = (pr.get("mergeCommit") or {}).get("oid")
     landed = pr["state"] == "MERGED" and any(
         r["number"] == wrapper and r["head"] == merge and r["conclusion"] == "success"
