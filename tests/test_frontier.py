@@ -1,7 +1,7 @@
 import random
 import unittest
 
-from concurrent_merge.frontier import Certificate, Frontier
+from concurrent_merge.frontier import KEEP, Certificate, Frontier
 from concurrent_merge.frontier_bench import bench, grouping
 from concurrent_merge.frontier_sim import compare, makespan, program, simulate
 
@@ -185,6 +185,30 @@ class SafetyTests(unittest.TestCase):
         f.record("t3", members={"A"})
         self.assertEqual(f.land_if(["A"], f.version), ("unproven", ["t1"]))
 
+    def test_an_older_certificate_with_other_reads_still_guards_main(self):
+        f = Frontier({"k": "k0", "j": "j0", "x": "x0"})
+        f.record("u", ["k", "x"])  # proves u on main
+        f.admit("X", {"x": "x1"})
+        f.record("u", ["x", "j"], members={"X"})  # on X, u's code reads j instead of k
+        f.admit("G", {"k": "k1"})
+        # u's proof of main read k, so G must not land on it unchecked.
+        self.assertIn("u", f.cone("G"))
+        self.assertEqual(f.land_if(["G"], f.version), ("unproven", ["u"]))
+        f.record("u", ["k", "x"], members={"G"})
+        self.assertIsNone(f.land_if(["G"], f.version))
+        self.assertIsNotNone(f.proves("u", members=set()))
+
+    def test_trimming_old_certificates_keeps_the_proof_of_main(self):
+        f = Frontier({"k": "k0"})
+        f.record("u", ["k"])
+        for i in range(40):
+            f.admit(i, {"k": f"k{i + 1}"})
+            f.record("u", members={i})
+            f.eject(i)
+        self.assertLessEqual(len(f.certs["u"]), KEEP + 1)
+        self.assertIsNotNone(f.proves("u", members=set()))
+        self.assertEqual(f.readers["k"], {"u"})
+
     def test_random_races_never_land_an_unproven_group(self):
         for seed in range(40):
             rng = random.Random(seed)
@@ -204,7 +228,11 @@ class SafetyTests(unittest.TestCase):
                     # A run of a few units on main plus some in-flight changes, maybe an old main.
                     members = set(rng.sample(list(f.changes), min(len(f.changes), rng.randint(1, 3))))
                     for u in rng.sample(list(units), 3):
-                        f.record(u, members=members)
+                        if rng.random() < 0.3:
+                            # On those changes the unit's code reads other inputs.
+                            f.record(u, rng.sample(keys, 4), members=members)
+                        else:
+                            f.record(u, members=members)
                 elif roll < 0.75 and f.changes:
                     # A scheduler decides on a group: usually it proves it first, sometimes on a
                     # main it read a moment ago.
@@ -222,16 +250,20 @@ class SafetyTests(unittest.TestCase):
                     for c in group:
                         tree.update(f.changes.get(c, {}))
                     before = (dict(f.base), f.version)
+
+                    def proven(tree):
+                        # Independent of the indexes: units with a certificate matching `tree`.
+                        return {u for u in units
+                                if any(all(tree.get(k) == d for k, d in cert.inputs.items())
+                                       for cert in f.certs.get(u, ()))}
+
+                    was = proven(before[0])
                     reason = f.land_if(list(group), version)
                     if reason is None:
-                        # Independent of the indexes: every unit reading a written key held a
-                        # certificate matching the whole new main on everything it read.
                         self.assertEqual(version, before[1])
-                        written = {k for c in group for k in tree if tree[k] != before[0].get(k)}
-                        for u, ks in units.items():
-                            if set(f.reads[u]) & written:
-                                self.assertTrue(any(all(tree.get(k) == d for k, d in cert.inputs.items())
-                                                    for cert in f.certs[u]), (seed, u, group))
+                        # Every unit proven on main before the landing is proven on the new main.
+                        self.assertLessEqual(was, proven(tree), (seed, group))
+                        self.assertEqual(f.base, {k: d for k, d in tree.items() if d is not None})
                     else:
                         self.assertEqual((dict(f.base), f.version), before)
 
