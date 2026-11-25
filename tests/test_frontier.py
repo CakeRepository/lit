@@ -369,3 +369,70 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(f.needs(["A"]), [])
         f.admit("B", {"src/db.ts#query": "q2"})
         self.assertEqual(f.needs(["B"]), ["src/a.test.ts"])
+
+
+class RunnerTests(unittest.TestCase):
+    """A certificate holds only in the environment, and with the host files, its run saw."""
+
+    def setUp(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from concurrent_merge.footprint import environment, file_digest
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.tool = root / "bin" / "tool"
+        self.tool.parent.mkdir()
+        self.tool.write_text("v1")
+        self.env = {"PATH": "/usr/bin", "LANG": "C", "HOME": "/home/a"}
+        job = root / "store" / "suite"
+        (job / "units").mkdir(parents=True)
+        tool = str(self.tool)
+        bundle = dict(
+            kind="lit-unit-footprints", commit="abc",
+            environment=environment(self.env, ["HOME"]), ignored_environment=["HOME"],
+            tracked={"a.py": ["100644", "oid-a"], "b.py": ["100644", "oid-b"]},
+            external={tool: file_digest(tool), "/etc/hosts": "h"},
+            units={
+                "test_a": dict(tracked=["a.py"], external=[tool, "/etc/hosts"], seconds=1.0),
+                "test_b": dict(tracked=["b.py"], external=[], seconds=1.0),
+            },
+        )
+        (job / "units" / "x.json").write_text(json.dumps(bundle))
+        self.store = str(root / "store")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def frontier(self, env):
+        from concurrent_merge.frontier import from_store, runner_inputs
+        f = from_store(self.store, "suite")
+        f.base.update(runner_inputs(f.readers, env))
+        return f
+
+    def test_runner_inputs_are_read_but_machine_local_files_are_not(self):
+        from concurrent_merge.frontier import ENVIRONMENT, from_store
+        f = from_store(self.store, "suite")
+        reads = f.reads["test_a"]
+        self.assertIn(str(self.tool), reads)
+        self.assertNotIn("/etc/hosts", reads)
+        self.assertTrue(any(k.startswith(ENVIRONMENT) for k in f.reads["test_b"]))
+        self.assertFalse(from_store(self.store, "suite", runner=False).reads["test_a"] & {str(self.tool)})
+
+    def test_the_same_runner_proves_and_an_ignored_variable_does_not_matter(self):
+        f = self.frontier(dict(self.env, HOME="/home/b"))
+        self.assertTrue(f.proves("test_a", set()))
+        self.assertTrue(f.proves("test_b", set()))
+
+    def test_another_environment_proves_nothing(self):
+        f = self.frontier(dict(self.env, PATH="/opt/bin:/usr/bin"))
+        self.assertIsNone(f.proves("test_a", set()))
+        self.assertIsNone(f.proves("test_b", set()))
+        f = self.frontier(dict(self.env, EXTRA="1"))  # a variable the record never saw
+        self.assertIsNone(f.proves("test_b", set()))
+
+    def test_a_new_toolchain_invalidates_only_the_units_that_read_it(self):
+        self.tool.write_text("v2")
+        f = self.frontier(self.env)
+        self.assertIsNone(f.proves("test_a", set()))
+        self.assertTrue(f.proves("test_b", set()))

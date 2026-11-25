@@ -37,13 +37,26 @@ unit whose run read an input that has since changed, and a unit read by two
 groups all count as unproven. Evidence is observed passes, not a proof that
 the code is correct: a nondeterministic unit, or one that read something lit
 did not record, can pass here and still fail.
+
+The runner is an input too. A certificate from the unit store also lists the
+environment its run saw and every file outside the checkout it read (the
+toolchain): runner inputs, keyed by absolute paths, which no repository path
+can be. The environment is one input, the digest of every variable the record
+did not ignore, so any change to it invalidates the certificate, as the unit
+store's own reuse check does. A host file is one input per path, so a new
+compiler invalidates only the units that read it. No change writes a runner
+input; main's value is what the runner holds now (runner_inputs), so a
+certificate taken in another environment proves nothing here.
 """
 
 from dataclasses import dataclass, field
+from hashlib import sha256
 import json
+import os
 from pathlib import Path
 
 KEEP = 16  # certificates kept per unit
+ENVIRONMENT = "/proc/self/environ?ignore="  # + the record's ignored patterns, as JSON
 
 
 @dataclass
@@ -267,14 +280,43 @@ def conflict_packet(frontier, cid, writes, meta):
     )
 
 
-def from_store(store, job):
+def environment_input(ignored):
+    """The key of the runner environment a record saw, with the patterns it ignored."""
+    return ENVIRONMENT + json.dumps(sorted(ignored))
+
+
+def environment_digest(recorded):
+    """One digest for a record's {variable: value digest}."""
+    return sha256(json.dumps(recorded, sort_keys=True).encode("utf8")).hexdigest()
+
+
+def runner_inputs(keys, env=None):
+    """Main's value for each runner input in `keys`: what this runner holds now."""
+    from .footprint import environment, file_digest
+
+    env = os.environ if env is None else env
+    out = {}
+    for key in keys:
+        if key.startswith(ENVIRONMENT):
+            out[key] = environment_digest(environment(env, json.loads(key[len(ENVIRONMENT):])))
+        elif key.startswith("/"):
+            out[key] = file_digest(key)
+    return out
+
+
+def from_store(store, job, runner=True):
     """The program map of one job from lit's unit store (cached-units records).
 
     A file recorded with symbols becomes one input per function the unit ran
     ("path#name", "" for its top-level code), digested by that function's own
     code; any other file the unit read is one input, digested by its blob id.
-    Each unit's newest passing footprint becomes its certificate on main.
+    With `runner`, each certificate also lists the runner inputs its run saw:
+    the environment, and each file outside the checkout it read. Each unit's
+    newest passing footprint becomes its certificate on main. Main's runner
+    inputs are the recorded ones; runner_inputs gives this runner's.
     """
+    from .footprint import MACHINE_LOCAL, under
+
     directory = Path(store) / job
     tables, base, f = {}, {}, None
     certs = []
@@ -301,6 +343,13 @@ def from_store(store, job):
                 else:
                     for symbol in sorted(set(ran[file]) | {""}):
                         inputs[f"{file}#{symbol}"] = table.get(symbol)
+            if runner:
+                if "environment" in bundle:
+                    key = environment_input(bundle.get("ignored_environment", ()))
+                    inputs[key] = environment_digest(bundle["environment"])
+                for path in unit.get("external", ()):
+                    if path.startswith("/") and not any(under(path, p) for p in MACHINE_LOCAL):
+                        inputs[path] = bundle.get("external", {}).get(path)
             base.update(inputs)
             certs.append(Certificate(name, inputs, unit.get("seconds") or 0.0))
     f = Frontier(base)

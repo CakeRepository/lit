@@ -9,6 +9,7 @@ from pathlib import Path
 from concurrent_merge import js_symbols
 from concurrent_merge.cli import write_shadow
 from concurrent_merge.engine import Repo
+from concurrent_merge.footprint import environment
 from concurrent_merge.shadow import MERGED, Contents, by_file, program, shadow, writes
 from concurrent_merge.symbols import digests
 
@@ -74,7 +75,7 @@ class ShadowTests(unittest.TestCase):
     def oid(self, commit, path):
         return self.git("rev-parse", f"{commit}:{path}")
 
-    def record(self, units):
+    def record(self, units, env=None):
         job = self.store / "suite"
         (job / "units").mkdir(parents=True)
         (job / "symbols").mkdir()
@@ -91,6 +92,8 @@ class ShadowTests(unittest.TestCase):
                 unit["symbols"] = ran
             bundle = dict(kind="lit-unit-footprints", commit=self.base,
                           tracked={p: tracked[p] for p in reads}, units={name: unit})
+            if env is not None:
+                bundle.update(environment=environment(env, []), ignored_environment=[])
             (job / "units" / f"{i}.json").write_text(json.dumps(bundle))
 
     def snapshot(self, heads, base=None):
@@ -151,6 +154,18 @@ class ShadowTests(unittest.TestCase):
         self.assertTrue(w["src/a.py"].startswith(MERGED))
         d = self.decide({1: old}, base=main)["decision"]
         self.assertEqual(d["components"][0]["needs"], ["tests/test_a.py"])
+
+    def test_a_store_recorded_in_another_environment_proves_nothing_here(self):
+        import shutil
+        shutil.rmtree(self.store)
+        runner = {"PATH": "/usr/bin", "LANG": "C"}
+        self.record({"tests/test_a.py": (["src/a.py", "tests/test_a.py"], None),
+                     "tests/test_b.py": (["src/b.py", "tests/test_b.py"], None)}, env=runner)
+        docs = self.commit({"README.md": "lit, faster\n"}, self.base, "docs")
+        same = shadow(self.repo, self.snapshot({1: docs}), self.store, "suite", env=runner)
+        self.assertEqual(same["decision"]["stale"], [])
+        moved = shadow(self.repo, self.snapshot({1: docs}), self.store, "suite", env=dict(runner, LANG="de_DE"))
+        self.assertEqual(moved["decision"]["stale"], ["tests/test_a.py", "tests/test_b.py"])
 
     def test_the_command_prints_the_decision(self):
         one = self.commit({"src/a.py": "a = 2\n"}, self.base, "one")
