@@ -26,6 +26,17 @@ units the overlaps share). A component lands when every unit reading anything
 its members wrote holds a certificate for main plus that component. Landing
 work grows with a change's own cone (the units reading what it wrote) and the
 overlaps it really has, never with how many other changes are in flight.
+
+Landing is a compare-and-swap on main. `version` counts every change to main;
+a scheduler that decided a group is proven at one version lands it with
+land_if(group, version). If main moved since, or a member left, or a unit the
+group touches has no certificate for main plus the group, nothing lands and
+the reason comes back, so a decision taken on stale evidence can never move
+main. A certificate proves only what it read: a unit with no certificate, a
+unit whose run read an input that has since changed, and a unit read by two
+groups all count as unproven. Evidence is observed passes, not a proof that
+the code is correct: a nondeterministic unit, or one that read something lit
+did not record, can pass here and still fail.
 """
 
 from dataclasses import dataclass, field
@@ -54,6 +65,7 @@ class Frontier:
     landed: list = field(default_factory=list)  # in landing order
     done: set = field(default_factory=set)  # the same, for lookups
     refused: dict = field(default_factory=dict)  # id -> conflict packet
+    version: int = 0  # bumped by every landing: what land_if compares against
 
     # Content
 
@@ -166,8 +178,27 @@ class Frontier:
         """Components whose combined tree every unit they touch already proves."""
         return [g for g in self.components() if not self.needs(g)]
 
+    def land_if(self, cids, version):
+        """Land `cids` only if main is still at `version` and certificates prove main plus them.
+
+        Returns None when the group landed, otherwise why it did not, and changes nothing:
+        ("moved", current version), ("absent", [ids not admitted]) or ("unproven", [units]).
+        """
+        cids = list(cids)
+        if version != self.version:
+            return ("moved", self.version)
+        absent = [c for c in cids if c not in self.changes]
+        if absent or not cids:
+            return ("absent", absent)
+        need = self.needs(cids)
+        if need:
+            return ("unproven", need)
+        self.land(cids)
+        return None
+
     def land(self, cids):
-        """Move changes into main. Certificates stay valid: they are keyed by content."""
+        """Move changes into main, unchecked. Certificates stay valid: they are keyed by content."""
+        self.version += 1
         for cid in cids:
             writes = self.changes.pop(cid)
             for key, digest in writes.items():

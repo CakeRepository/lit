@@ -1,6 +1,7 @@
+import random
 import unittest
 
-from concurrent_merge.frontier import Frontier
+from concurrent_merge.frontier import Certificate, Frontier
 from concurrent_merge.frontier_bench import bench, grouping
 from concurrent_merge.frontier_sim import makespan, program, simulate
 
@@ -118,6 +119,121 @@ class ScaleTests(unittest.TestCase):
             self.assertIsNone(f.admit(cid, {f"k{ids.index(cid)}": cid}))
         self.assertEqual(f.components(), [order])
         self.assertEqual(f.components(ids[:3]), [[ids[2], ids[1], ids[0]]])
+
+
+class SafetyTests(unittest.TestCase):
+    """Stale evidence and a lost race on main never land anything unproven."""
+
+    def test_a_decision_taken_before_main_moved_lands_nothing(self):
+        f = mapped()
+        f.admit("A", {"a.ts#f": "f1"})
+        f.admit("B", {"b.ts#h": "h1"})
+        f.record("t3", members={"B"})  # B's run saw f0
+        seen = f.version
+        self.assertEqual(f.needs(["B"]), [])  # B looks ready at `seen`
+        f.record("t1", members={"A"})
+        f.record("t3", members={"A"})
+        self.assertIsNone(f.land_if(["A"], seen))  # A wins the race; t3 read f, which A wrote
+        self.assertEqual(f.land_if(["B"], seen), ("moved", f.version))
+        self.assertIn("B", f.changes)
+        self.assertNotEqual(f.base["b.ts#h"], "h1")
+        # Rechecked at the new version, the stale proof shows up as work.
+        self.assertEqual(f.land_if(["B"], f.version), ("unproven", ["t3"]))
+        f.record("t3", members={"B"})
+        self.assertIsNone(f.land_if(["B"], f.version))
+        self.assertEqual(f.landed, ["A", "B"])
+
+    def test_an_unrelated_landing_costs_a_recheck_not_a_rerun(self):
+        f = mapped()
+        f.admit("A", {"a.ts#g": "g1"})
+        f.admit("B", {"b.ts#h": "h1"})
+        f.record("t2", members={"A"})
+        f.record("t3", members={"B"})
+        seen = f.version
+        self.assertIsNone(f.land_if(["A"], seen))
+        self.assertEqual(f.land_if(["B"], seen), ("moved", 1))
+        self.assertIsNone(f.land_if(["B"], f.version))  # B's own passes still hold
+
+    def test_a_blocked_change_does_not_hold_up_an_independent_one(self):
+        f = mapped()
+        f.admit("A", {"a.ts#f": "f1"})  # its tests never pass
+        f.admit("B", {"a.ts#g": "g1"})
+        f.record("t2", members={"B"})
+        self.assertEqual(f.land_if(["A"], f.version), ("unproven", ["t1", "t3"]))
+        self.assertEqual(f.land_if(["A", "B"], f.version), ("unproven", ["t1", "t3"]))
+        self.assertIsNone(f.land_if(["B"], f.version))
+        self.assertEqual(f.base["a.ts#g"], "g1")
+        self.assertIn("A", f.changes)
+
+    def test_absent_members_and_unknown_units_refuse(self):
+        f = mapped()
+        f.admit("A", {"a.ts#f": "f1"})
+        self.assertEqual(f.land_if(["A", "Z"], f.version), ("absent", ["Z"]))
+        self.assertEqual(f.land_if([], f.version), ("absent", []))
+        f.eject("A")
+        self.assertEqual(f.land_if(["A"], f.version), ("absent", ["A"]))
+        # A unit that has never passed proves nothing, even for a change it barely touches.
+        f.admit("C", {"new.ts#n": "n1"})
+        f.readers.setdefault("new.ts#n", set()).add("t9")
+        f.reads["t9"] = {"new.ts#n"}
+        self.assertEqual(f.land_if(["C"], f.version), ("unproven", ["t9"]))
+
+    def test_a_certificate_for_another_tree_does_not_prove_this_one(self):
+        f = mapped()
+        f.admit("A", {"a.ts#f": "f1"})
+        f.record("t1", cert=Certificate("t1", {"a.ts#f": "f2"}))  # passed on some other f
+        f.record("t3", members={"A"})
+        self.assertEqual(f.land_if(["A"], f.version), ("unproven", ["t1"]))
+
+    def test_random_races_never_land_an_unproven_group(self):
+        for seed in range(40):
+            rng = random.Random(seed)
+            keys = [f"k{i}" for i in range(30)]
+            f = Frontier({k: "v0" for k in keys})
+            units = {f"u{i}": rng.sample(keys, 4) for i in range(25)}
+            for u, ks in units.items():
+                f.record(u, ks)
+            pending, cid = [], 0
+            for _ in range(120):
+                roll = rng.random()
+                if roll < 0.3:
+                    if f.admit(cid, {k: f"c{cid}" for k in rng.sample(keys, 2)}) is None:
+                        pending.append(cid)
+                    cid += 1
+                elif roll < 0.55 and f.changes:
+                    # A run of a few units on main plus some in-flight changes, maybe an old main.
+                    members = set(rng.sample(list(f.changes), min(len(f.changes), rng.randint(1, 3))))
+                    for u in rng.sample(list(units), 3):
+                        f.record(u, members=members)
+                elif roll < 0.75 and f.changes:
+                    # A scheduler decides on a group: usually it proves it first, sometimes on a
+                    # main it read a moment ago.
+                    group = rng.sample(list(f.changes), min(len(f.changes), rng.randint(1, 3)))
+                    if rng.random() < 0.7:
+                        for u in f.needs(group):
+                            f.record(u, members=set(group))
+                    pending.append((tuple(group), f.version - (rng.random() < 0.2)))
+                elif pending:
+                    item = pending.pop(rng.randrange(len(pending)))
+                    if not isinstance(item, tuple):
+                        continue
+                    group, version = item
+                    tree = dict(f.base)
+                    for c in group:
+                        tree.update(f.changes.get(c, {}))
+                    before = (dict(f.base), f.version)
+                    reason = f.land_if(list(group), version)
+                    if reason is None:
+                        # Independent of the indexes: every unit reading a written key held a
+                        # certificate matching the whole new main on everything it read.
+                        self.assertEqual(version, before[1])
+                        written = {k for c in group for k in tree if tree[k] != before[0].get(k)}
+                        for u, ks in units.items():
+                            if set(f.reads[u]) & written:
+                                self.assertTrue(any(all(tree.get(k) == d for k, d in cert.inputs.items())
+                                                    for cert in f.certs[u]), (seed, u, group))
+                    else:
+                        self.assertEqual((dict(f.base), f.version), before)
 
 
 class SimTests(unittest.TestCase):
