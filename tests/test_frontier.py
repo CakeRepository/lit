@@ -3,7 +3,7 @@ import unittest
 
 from concurrent_merge.frontier import KEEP, Certificate, Frontier
 from concurrent_merge.frontier_bench import bench, grouping
-from concurrent_merge.frontier_sim import compare, makespan, program, simulate
+from concurrent_merge.frontier_sim import compare, makespan, program, simulate, sweep
 
 
 def mapped():
@@ -293,6 +293,46 @@ class SimTests(unittest.TestCase):
         self.assertLess(rows["dependency"]["p50"], rows["fixed"]["p50"])
         self.assertLess(rows["dependency"]["p99"], rows["fixed"]["p99"])
         self.assertLessEqual(rows["dependency"]["p99"], rows["adaptive"]["p99"])
+
+    hours = {}
+
+    def overloaded(self):
+        return program(app_keys=600, lib_keys=400, web=100, db=40, journeys=8, journey_share=0.3)
+
+    def hour(self, **stream):
+        """One simulated hour on the overloaded program, shared by the tests that ask for it."""
+        key = tuple(sorted(stream.items()))
+        if key not in self.hours:
+            self.hours[key] = simulate(self.overloaded(), hours=1, cores=4, **stream)
+        return self.hours[key]
+
+    def test_past_capacity_the_backlog_and_the_tail_grow(self):
+        (light,) = sweep(self.overloaded(), (60,), hours=1, cores=4)
+        heavy = self.hour(per_hour=1500)
+        self.assertEqual(light["per_hour"], 60)
+        self.assertGreater(heavy["backlog_peak"], 5 * light["backlog_peak"])
+        self.assertGreater(heavy["p99"], 2 * light["p99"])
+        self.assertGreater(heavy["refused"], light["refused"])  # more changes collide on one input
+        for r in (light, heavy):
+            self.assertEqual(r["waiting"], 0)
+
+    def test_backpressure_bounds_what_is_in_flight_and_waits_count_from_first_arrival(self):
+        free = self.hour(per_hour=1500)
+        held = self.hour(per_hour=1500, max_waiting=20, backoff=120)
+        self.assertLessEqual(held["backlog_peak"], 20)
+        self.assertGreater(held["deferred"], 0)
+        self.assertEqual(held["waiting"], 0)
+        self.assertEqual(held["landed"] + held["sent_back"], held["arrived"])
+        # Fewer changes in flight at once collide less, but deferral is paid in waiting time.
+        self.assertLess(held["refused"], free["refused"])
+        self.assertGreater(held["p50"], free["p50"])
+
+    def test_hot_spots_widen_cones_and_cause_more_collisions(self):
+        cold = self.hour(per_hour=600, hot=0.0)
+        hot = self.hour(per_hour=600, hot=0.5)
+        self.assertGreater(hot["median_cone"], cold["median_cone"])
+        self.assertGreater(hot["refused"], cold["refused"])
+        self.assertGreater(hot["overlap_runs"], cold["overlap_runs"])
 
     def test_an_unknown_policy_is_refused(self):
         with self.assertRaises(ValueError):

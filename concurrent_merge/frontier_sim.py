@@ -18,6 +18,12 @@ waits for a batch of the `batch` oldest. "adaptive" proves everything waiting
 at once, so a batch grows with the backlog. All three reuse certificates, so
 only the batching differs. Each starts from the oldest waiting change, so
 none starves; `max` reports the longest wait. All results are synthetic.
+
+Past capacity (changes arriving faster than the runner proves their
+overlaps) the backlog grows without bound and so do waits. `max_waiting` is
+backpressure: an arrival that would make more than that many changes in
+flight is told to come back `backoff` seconds later, and its wait still
+counts from when it first came. `sweep` runs one program at several rates.
 """
 
 from dataclasses import dataclass
@@ -63,13 +69,15 @@ def makespan(seconds, cores):
 
 
 def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, interaction=0.02,
-             seed=2, lag=(300, 3600), cores=1, policy="dependency", batch=8):
+             seed=2, lag=(300, 3600), cores=1, policy="dependency", batch=8,
+             max_waiting=None, backoff=300.0):
     """Stream changes at `per_hour` for `hours` through one merge runner.
 
     lag: how long before a change is ready its PR's own run happened (seconds, uniform),
     so its passes were taken on an older main.
     cores: units the one merge runner runs side by side (a snapshot's units are independent).
     policy, batch: what one snapshot holds (see the module docstring).
+    max_waiting, backoff: backpressure (see the module docstring); None admits everything.
     """
     if policy not in ("dependency", "fixed", "adaptive"):
         raise ValueError(f"Unknown policy: {policy}")
@@ -89,7 +97,8 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
     seq = 2 * n
     planned, proofs = {}, {}
     arrived, landed_at = {}, {}
-    stats = dict(refused=0, sent_back=0, runs=0, overlap_runs=0, runner_seconds=0.0,
+    ready = {}  # change -> when it first came, deferred or not
+    stats = dict(refused=0, sent_back=0, deferred=0, backlog_peak=0, runs=0, overlap_runs=0, runner_seconds=0.0,
                  author_seconds=0.0, wall=0.0, cones=[], overlap_counts=[])
     busy = False
     reserved = set()  # the cone of the snapshot being proved
@@ -187,6 +196,12 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
             stats["author_seconds"] += sum(prog.units[u][1] for u in touched)
         elif kind == "arrive":
             cid = ref
+            ready.setdefault(cid, now)
+            if max_waiting is not None and len(f.changes) >= max_waiting:
+                stats["deferred"] += 1
+                heapq.heappush(events, (now + backoff, seq, "arrive", cid))
+                seq += 1
+                continue
             if cid not in planned:
                 product = "app" if rng.random() < 0.5 else "lib"
                 planned[cid] = {k: f"c{cid}" for k in writes_for(product)}
@@ -194,6 +209,7 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
                 stats["refused"] += 1
                 continue
             arrived[cid] = now
+            stats["backlog_peak"] = max(stats["backlog_peak"], len(f.changes))
             stats["cones"].append(len(f.cone(cid)))
             for cert in proofs.pop(cid, ()):
                 f.record(cert.unit, cert=cert)
@@ -227,7 +243,7 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
             for c in live:
                 try_land(c, now)
         schedule(now)
-    waits = [landed_at[c] - arrived[c] for c in landed_at]
+    waits = [landed_at[c] - ready[c] for c in landed_at]
     cuts = statistics.quantiles(waits, n=100, method="inclusive") if len(waits) >= 2 else waits * 99
     total = hours * 3600
     return dict(
@@ -236,6 +252,8 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
         landed=len(landed_at),
         refused=stats["refused"],
         sent_back=stats["sent_back"],
+        deferred=stats["deferred"],
+        backlog_peak=stats["backlog_peak"],
         median=statistics.median(waits) if waits else None,
         p90=statistics.quantiles(waits, n=10)[-1] if len(waits) >= 10 else None,
         p50=cuts[49] if waits else None,
@@ -257,6 +275,11 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
 def compare(prog, policies=("dependency", "fixed", "adaptive"), **stream):
     """The same stream through each policy: one result row per policy."""
     return [simulate(prog, policy=p, **stream) for p in policies]
+
+
+def sweep(prog, rates, **stream):
+    """One program at several arrival rates (changes per hour): one result row per rate."""
+    return [dict(simulate(prog, per_hour=r, **stream), per_hour=r) for r in rates]
 
 
 if __name__ == "__main__":

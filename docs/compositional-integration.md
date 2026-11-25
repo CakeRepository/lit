@@ -112,8 +112,9 @@ evidence:
   the oldest waiting change.
 - **L3, capacity.** If changes arrive faster than the merge runner can prove
   their overlaps, the backlog grows without bound. The model doesn't promise
-  that main advances under overload; backpressure (refusing or delaying
-  admission) is the remedy, and it isn't modelled yet.
+  that main advances under overload. The simulator's `max_waiting` is one
+  form of backpressure: an arrival that would exceed it is told to come back
+  later, and its wait still counts from when it first came.
 
 ## Cost of each step
 
@@ -149,6 +150,14 @@ or real Git landings.
   dependency, fixed and adaptive batching, with p50, p95, p99 and longest wait.
   At 200 changes an hour, dependency scheduling waited 211 s at p50 against
   685 s for fixed batches of 8.
+- `frontier_sim.sweep` and `max_waiting`: past capacity, on a mid-size program
+  with 4 cores, going from 120 to 3,200 changes an hour raised the peak
+  backlog from 10 to 479 and p99 from 153 s to 3,071 s. Most of the extra load
+  was refused as same-input conflicts (2 against 2,343). Capping in-flight
+  changes at 80 cut refusals to 675 but raised p99 to 6,025 s. Backpressure
+  trades collisions for waiting; it doesn't add capacity.
+- Hot spots (`hot`, the share of writes drawn by popularity) widen cones and
+  multiply overlap runs and conflicts.
 
 ## Still open
 
@@ -161,8 +170,9 @@ or real Git landings.
   approvals.
 - **Environment in certificates.** Bind certificates to the environment that
   ran them (assumption 3).
-- **Overload and adversarial workloads.** Model backpressure, plus hot spots,
-  retries and contention on the landing compare-and-swap, in the benchmarks.
+- **Overload, further.** Retries of refused changes, flaky units and several
+  schedulers contending for the landing compare-and-swap are not modelled
+  yet.
 - **Release bridges.** Promote one immutable main snapshot through
   Lab → Early Release → Production, each stage with its own evidence. A
   failure downstream holds that promotion only, never main integration.
