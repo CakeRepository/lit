@@ -142,10 +142,13 @@ class Frontier:
                 for other in self.touching(unit):
                     if other in parent:
                         parent[find(other)] = find(cid)
+        # Each group in admission order. One position lookup per change, built once,
+        # keeps this linear in the changes asked about however large a group grows.
+        order = {c: i for i, c in enumerate(self.changes)}
         groups = {}
         for cid in cids:
             groups.setdefault(find(cid), []).append(cid)
-        return [sorted(g, key=list(self.changes).index) for g in groups.values()]
+        return [sorted(g, key=order.__getitem__) for g in groups.values()]
 
     def needs(self, cids):
         """Units that must run before `cids` land together: their cone minus what certificates prove."""
