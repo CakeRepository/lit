@@ -275,6 +275,40 @@ class RestFallbackTests(unittest.TestCase):
                 cli.collect("owner/repo", "main")
 
 
+class OutsideContributorTests(unittest.TestCase):
+    def test_hold_outside_keeps_outside_prs_out_until_allowed(self):
+        pages = [[
+            pr(1, authorAssociation="MEMBER"),
+            pr(2, authorAssociation="CONTRIBUTOR"),
+            pr(3, authorAssociation="FIRST_TIME_CONTRIBUTOR"),
+            pr(4),
+        ]]
+        with patch("sys.stderr") as err:
+            snapshot, _ = collect(pages, cli.selection_of([1, 2, 3, 4], hold_outside=True))
+        self.assertEqual([c["number"] for c in snapshot["changes"]], [1])
+        self.assertIn("#2, #3, #4", "".join(c.args[0] for c in err.write.call_args_list))
+        selection = cli.selection_of([1, 2, 3], hold_outside=True, allow_outside=[3])
+        with patch("sys.stderr"):
+            snapshot, _ = collect(pages, selection)
+        self.assertEqual([c["number"] for c in snapshot["changes"]], [1, 3])
+        self.assertEqual(snapshot["selection"]["allow_outside"], [3])
+
+    def test_without_hold_every_author_lands_as_before(self):
+        snapshot, _ = collect([[pr(1, authorAssociation="NONE")]], cli.selection_of([1]))
+        self.assertEqual([c["number"] for c in snapshot["changes"]], [1])
+
+    def test_rest_reads_author_association(self):
+        fake = FakeREST([rest_pr(1, author_association="OWNER"), rest_pr(2, author_association="NONE")])
+        snapshot = rest_collect(fake, cli.selection_of([1, 2], hold_outside=True), api="rest")
+        self.assertEqual([c["number"] for c in snapshot["changes"]], [1])
+
+    def test_allow_outside_needs_hold_and_a_pick(self):
+        with self.assertRaisesRegex(ValueError, "needs --hold-outside"):
+            cli.selection_of([1], allow_outside=[1])
+        with self.assertRaisesRegex(ValueError, "Pick changes"):
+            collect([[pr(1)]], cli.selection_of(hold_outside=True))
+
+
 class AgentOverrideTests(unittest.TestCase):
     PATTERN = r"^Agents Hangout bot: (.+)$"
 

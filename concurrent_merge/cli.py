@@ -123,7 +123,7 @@ PULLS_QUERY = """query($owner:String!,$name:String!,$branch:String!,$ref:String!
     repository(owner:$owner,name:$name){ref(qualifiedName:$ref){target{oid}}
       pullRequests(states:OPEN,baseRefName:$branch,first:50,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){
         pageInfo{hasNextPage endCursor}
-        nodes{number headRefOid baseRefName isDraft author{login} body
+        nodes{number headRefOid baseRefName isDraft author{login} authorAssociation body
           labels(first:100){nodes{name}}
           latestOpinionatedReviews(first:100){nodes{state author{login} commit{oid}}}}}}}"""
 
@@ -141,8 +141,19 @@ def approvals(pr):
     )
 
 
-def selection_of(prs=None, label=None, min_reviews=0):
+TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
+
+
+def selection_of(prs=None, label=None, min_reviews=0, hold_outside=False, allow_outside=()):
     selection = {}
+    if hold_outside:
+        selection["hold_outside"] = True
+        if allow_outside:
+            if any(type(n) is not int or n <= 0 for n in allow_outside):
+                raise ValueError("PR numbers must be positive integers")
+            selection["allow_outside"] = sorted(set(allow_outside))
+    elif allow_outside:
+        raise ValueError("--allow-outside needs --hold-outside")
     if prs:
         if any(type(n) is not int or n <= 0 for n in prs):
             raise ValueError("PR numbers must be positive integers")
@@ -220,6 +231,7 @@ def open_pulls_rest(repository, branch, reviews):
                 baseRefName=pr["base"]["ref"],
                 isDraft=bool(pr.get("draft")),
                 author={"login": pr["user"]["login"]} if pr.get("user") else None,
+                authorAssociation=pr.get("author_association") or "NONE",
                 body=pr.get("body") or "",
                 labels={"nodes": [{"name": l["name"]} for l in pr.get("labels", [])]},
                 latestOpinionatedReviews={
@@ -252,9 +264,11 @@ def open_pulls(repository, branch, reviews=False):
 
 def pulls(repository, branch, selection, author_pattern=None):
     """Snapshot open PRs picked by number, label or approvals, for repos without a merge queue."""
-    if not selection:
+    if not set(selection) - {"hold_outside", "allow_outside"}:
         raise ValueError("Pick changes with --prs, --label or --min-reviews")
     wanted = set(selection.get("prs", ()))
+    allowed = set(selection.get("allow_outside", ()))
+    outside = []
     label, minimum = selection.get("label"), selection.get("min_reviews", 0)
     changes, seen = {}, set()
     base, nodes = open_pulls(repository, branch, reviews=bool(minimum))
@@ -270,6 +284,13 @@ def pulls(repository, branch, selection, author_pattern=None):
             continue
         if approvals(p) < minimum:
             continue
+        if (
+            selection.get("hold_outside")
+            and p.get("authorAssociation", "NONE") not in TRUSTED
+            and n not in allowed
+        ):
+            outside.append(n)
+            continue
         change = change_row(
             n,
             p["headRefOid"],
@@ -284,7 +305,14 @@ def pulls(repository, branch, selection, author_pattern=None):
         raise ValueError(
             f"Not open against {branch}: " + ", ".join(f"#{n}" for n in missing)
         )
-    if wanted and (skipped := sorted(wanted - changes.keys())):
+    if outside:
+        print(
+            "lit: held for review, from outside contributors: "
+            + ", ".join(f"#{n}" for n in sorted(outside))
+            + " (after review, collect again with --allow-outside)",
+            file=sys.stderr,
+        )
+    if wanted and (skipped := sorted(wanted - changes.keys() - set(outside))):
         raise ValueError(
             "Draft or not matching the other rules: "
             + ", ".join(f"#{n}" for n in skipped)
@@ -646,6 +674,20 @@ def main():
         help="Collect open PRs with at least K approvals on their current head",
     )
     c.add_argument(
+        "--hold-outside",
+        action="store_true",
+        help="Hold PRs whose authors have no write access (not owner, member or collaborator) "
+        "until they are reviewed and passed with --allow-outside",
+    )
+    c.add_argument(
+        "--allow-outside",
+        nargs="+",
+        type=int,
+        default=(),
+        metavar="N",
+        help="With --hold-outside: outside contributors' PRs that passed review",
+    )
+    c.add_argument(
         "--author-pattern",
         metavar="REGEX",
         help="Read each change's agent from its PR body (group 1 of the first match); "
@@ -912,7 +954,9 @@ def main():
             snapshot = collect(
                 args.repository,
                 args.branch,
-                selection_of(args.prs, args.label, args.min_reviews),
+                selection_of(
+                    args.prs, args.label, args.min_reviews, args.hold_outside, args.allow_outside
+                ),
                 args.author_pattern,
             )
             repo = Repo(args.repo)
