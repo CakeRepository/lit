@@ -1,7 +1,7 @@
 import unittest
 
 from concurrent_merge.frontier import Frontier
-from concurrent_merge.frontier_bench import bench
+from concurrent_merge.frontier_bench import bench, grouping
 from concurrent_merge.frontier_sim import makespan, program, simulate
 
 
@@ -101,6 +101,23 @@ class ScaleTests(unittest.TestCase):
                           report=(2_000, 20_000)))
         self.assertGreater(rows[1]["in_flight"], 5 * rows[0]["in_flight"])
         self.assertLess(rows[1]["us_per_change"], 3 * rows[0]["us_per_change"])
+
+    def test_grouping_reports_one_component_swallowing_what_is_in_flight(self):
+        rows = list(grouping(changes=20_000, functions=200_000, units=5_000, reads=20,
+                             report=(2_000, 20_000)))
+        self.assertEqual([r["seen"] for r in rows], [2_000, 20_000])
+        self.assertGreater(rows[1]["largest"], 20 * rows[0]["largest"])
+        self.assertLess(rows[1]["components"], rows[1]["in_flight"])
+
+    def test_components_keep_admission_order_inside_a_large_group(self):
+        f = Frontier({})
+        f.record("shared", [f"k{i}" for i in range(500)])
+        ids = [f"c{i:03d}" for i in range(500)]
+        order = list(reversed(ids))  # admitted out of name order
+        for cid in order:
+            self.assertIsNone(f.admit(cid, {f"k{ids.index(cid)}": cid}))
+        self.assertEqual(f.components(), [order])
+        self.assertEqual(f.components(ids[:3]), [[ids[2], ids[1], ids[0]]])
 
 
 class SimTests(unittest.TestCase):
