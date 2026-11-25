@@ -3,7 +3,7 @@ import unittest
 
 from concurrent_merge.frontier import Certificate, Frontier
 from concurrent_merge.frontier_bench import bench, grouping
-from concurrent_merge.frontier_sim import makespan, program, simulate
+from concurrent_merge.frontier_sim import compare, makespan, program, simulate
 
 
 def mapped():
@@ -246,6 +246,26 @@ class SimTests(unittest.TestCase):
         r = simulate(prog, per_hour=20, hours=1, cores=8)
         self.assertEqual(r["landed"] + r["sent_back"], r["arrived"])
         self.assertLess(r["median"], 120)
+
+    def test_policies_see_one_stream_and_none_leaves_work_waiting(self):
+        prog = program(app_keys=1500, lib_keys=1000, web=250, db=100, journeys=20, journey_share=0.3)
+        rows = {r["policy"]: r for r in compare(prog, per_hour=120, hours=1, cores=4, batch=2)}
+        self.assertEqual(set(rows), {"dependency", "fixed", "adaptive"})
+        for r in rows.values():
+            self.assertEqual(r["waiting"], 0)  # every admitted change landed or went back
+            self.assertEqual(r["landed"] + r["sent_back"], r["arrived"])
+            self.assertLessEqual(r["p50"], r["p95"])
+            self.assertLessEqual(r["p95"], r["p99"])
+            self.assertLessEqual(r["p99"], r["max"])
+        # Landing a change on its own passes beats waiting for a batch, at the median and the tail.
+        self.assertLess(rows["dependency"]["p50"], rows["fixed"]["p50"])
+        self.assertLess(rows["dependency"]["p99"], rows["fixed"]["p99"])
+        self.assertLessEqual(rows["dependency"]["p99"], rows["adaptive"]["p99"])
+
+    def test_an_unknown_policy_is_refused(self):
+        with self.assertRaises(ValueError):
+            simulate(program(app_keys=10, lib_keys=10, web=1, db=1, journeys=1), per_hour=1, hours=1,
+                     policy="lifo")
 
 
 if __name__ == "__main__":
