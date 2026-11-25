@@ -9,6 +9,15 @@ PR's own CI); the merge runner then only runs what changes have in common.
 
 Questions it answers: how long from ready to landed, how busy the one merge
 runner is, how much of the work is overlap, and where it stops scaling.
+
+`policy` picks what the runner proves together, so the same stream can
+compare schedulers. "dependency" (the default) lands a change alone the
+moment its own passes prove main plus it, and otherwise proves the oldest
+waiting change's component. "fixed" works like a merge queue: every change
+waits for a batch of the `batch` oldest. "adaptive" proves everything waiting
+at once, so a batch grows with the backlog. All three reuse certificates, so
+only the batching differs. Each starts from the oldest waiting change, so
+none starves; `max` reports the longest wait. All results are synthetic.
 """
 
 from dataclasses import dataclass
@@ -54,14 +63,19 @@ def makespan(seconds, cores):
 
 
 def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, interaction=0.02,
-             seed=2, lag=(300, 3600), cores=1):
+             seed=2, lag=(300, 3600), cores=1, policy="dependency", batch=8):
     """Stream changes at `per_hour` for `hours` through one merge runner.
 
     lag: how long before a change is ready its PR's own run happened (seconds, uniform),
     so its passes were taken on an older main.
     cores: units the one merge runner runs side by side (a snapshot's units are independent).
+    policy, batch: what one snapshot holds (see the module docstring).
     """
+    if policy not in ("dependency", "fixed", "adaptive"):
+        raise ValueError(f"Unknown policy: {policy}")
     rng = random.Random(seed)
+    # Failures draw from their own stream, so every policy sees the same changes arrive.
+    luck = random.Random(seed + 1)
     base = {k: "v0" for p in prog.keys.values() for k in p}
     f = Frontier(base)
     for unit, (keys, seconds) in prog.units.items():
@@ -111,6 +125,11 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
         """A change lands alone when its own passes still prove main plus it."""
         if cid not in f.changes:
             return
+        if policy != "dependency":
+            # A queue validates every change in a batch; nothing lands on its own passes.
+            if cid not in dirty:
+                dirty.append(cid)
+            return
         # While a snapshot is being proved, a change that touches its units waits for it,
         # or its landing would leave the snapshot's passes proving an old main.
         if not (f.cone(cid) & reserved) and not f.needs([cid]):
@@ -126,7 +145,12 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
             if cid not in f.changes:
                 dirty.pop(0)
                 continue
-            group = [c for c in component(cid) if c in dirty]
+            if policy == "dependency":
+                group = [c for c in component(cid) if c in dirty]
+            elif policy == "fixed":
+                group = dirty[:batch]
+            else:
+                group = list(dirty)
             need = f.needs(group)
             if not need:
                 land(group, now)
@@ -183,8 +207,8 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
             # Each change beyond the first that shares a unit with the others may break it.
             sharing = {c for u in overlaps for c in f.touching(u) if c in live}
             failing = None
-            if len(sharing) > 1 and rng.random() < 1 - (1 - interaction) ** (len(sharing) - 1):
-                failing = rng.choice(overlaps)
+            if len(sharing) > 1 and luck.random() < 1 - (1 - interaction) ** (len(sharing) - 1):
+                failing = luck.choice(overlaps)
             # Every unit that passed keeps its certificate, failed run or not: it is keyed by
             # content, so after the culprit leaves, only units that read the culprit's inputs rerun.
             for cert in certs:
@@ -204,14 +228,21 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
                 try_land(c, now)
         schedule(now)
     waits = [landed_at[c] - arrived[c] for c in landed_at]
+    cuts = statistics.quantiles(waits, n=100, method="inclusive") if len(waits) >= 2 else waits * 99
     total = hours * 3600
     return dict(
+        policy=policy,
         arrived=len(arrived),
         landed=len(landed_at),
         refused=stats["refused"],
         sent_back=stats["sent_back"],
         median=statistics.median(waits) if waits else None,
         p90=statistics.quantiles(waits, n=10)[-1] if len(waits) >= 10 else None,
+        p50=cuts[49] if waits else None,
+        p95=cuts[94] if waits else None,
+        p99=cuts[98] if waits else None,
+        max=max(waits) if waits else None,
+        waiting=len(f.changes),
         instant=sum(1 for w in waits if w == 0) / len(waits) if waits else 0,
         runner_busy=stats["wall"] / total,
         runner_seconds_per_change=stats["runner_seconds"] / max(1, len(arrived)),
@@ -221,3 +252,19 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
         median_cone=statistics.median(stats["cones"]) if stats["cones"] else 0,
         finished=now,
     )
+
+
+def compare(prog, policies=("dependency", "fixed", "adaptive"), **stream):
+    """The same stream through each policy: one result row per policy."""
+    return [simulate(prog, policy=p, **stream) for p in policies]
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+    per_hour = float(sys.argv[1]) if len(sys.argv) > 1 else 200
+    hours = float(sys.argv[2]) if len(sys.argv) > 2 else 2
+    keep = ("policy", "arrived", "landed", "sent_back", "waiting", "p50", "p95", "p99", "max",
+            "runner_busy", "unit_runs")
+    for row in compare(program(), per_hour=per_hour, hours=hours, cores=8):
+        print(json.dumps({k: round(v, 1) if isinstance(v, float) else v for k, v in row.items() if k in keep}))
