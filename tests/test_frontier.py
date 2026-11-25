@@ -336,6 +336,55 @@ class SimTests(unittest.TestCase):
         self.assertGreater(hot["refused"], cold["refused"])
         self.assertGreater(hot["overlap_runs"], cold["overlap_runs"])
 
+    def test_retried_changes_come_back_and_land_with_waits_from_first_arrival(self):
+        once = self.hour(per_hour=600)
+        again = self.hour(per_hour=600, retry=120)
+        for r in (once, again):
+            self.assertEqual(r["waiting"], 0)
+            self.assertEqual(r["landed"] + r["gave_up"], 600)  # every change landed or was dropped
+        self.assertEqual(once["retried"], 0)
+        self.assertGreater(again["retried"], 0)
+        self.assertLess(again["gave_up"], once["gave_up"])
+        self.assertGreater(again["landed"], once["landed"])
+        # A change that went back and came again waited the whole time.
+        self.assertGreater(again["p99"], once["p99"])
+
+    def test_retries_stop_after_max_retries(self):
+        r = self.hour(per_hour=600, retry=120, max_retries=1, hot=0.5)
+        self.assertGreater(r["gave_up"], 0)
+        self.assertLessEqual(r["retried"], 600)
+
+    def test_a_flaky_unit_sends_innocent_changes_back_unless_its_failure_is_confirmed(self):
+        steady = self.hour(per_hour=600)
+        flaky = self.hour(per_hour=600, flaky=0.01)
+        confirmed = self.hour(per_hour=600, flaky=0.01, confirm=True)
+        self.assertEqual(steady["spurious"], 0)
+        self.assertGreater(flaky["wrongly_sent_back"], 3 * steady["sent_back"])
+        self.assertEqual(flaky["wrongly_sent_back"], flaky["spurious"])
+        # One rerun of the failed unit keeps the innocent change, for a few extra unit runs.
+        self.assertGreater(confirmed["confirm_runs"], 0)
+        self.assertLess(confirmed["wrongly_sent_back"], flaky["wrongly_sent_back"] / 10)
+        self.assertGreater(confirmed["landed"], flaky["landed"])
+        self.assertLess(confirmed["p99"], flaky["p99"])
+
+    def test_runners_racing_to_land_recheck_instead_of_rerunning(self):
+        one = self.hour(per_hour=1500)
+        three = self.hour(per_hour=1500, runners=3)
+        self.assertEqual(three["runners"], 3)
+        self.assertEqual(three["waiting"], 0)
+        self.assertEqual(three["landed"] + three["gave_up"], 1500)
+        # Snapshots on disjoint cones run side by side; each lands by compare-and-swap.
+        self.assertGreater(three["lost_races"], 10 * max(1, one["lost_races"]))
+        self.assertEqual(three["lost_races"], three["recheck_landed"] + three["reproved"])
+        # A lost race costs a recheck: nothing a snapshot relied on moved, so it lands as it is.
+        self.assertGreater(three["recheck_landed"], 5 * three["reproved"])
+        self.assertLess(three["p99"], one["p99"])
+
+    def test_at_least_one_runner(self):
+        with self.assertRaises(ValueError):
+            simulate(program(app_keys=10, lib_keys=10, web=1, db=1, journeys=1), per_hour=1, hours=1,
+                     runners=0)
+
     def test_an_unknown_policy_is_refused(self):
         with self.assertRaises(ValueError):
             simulate(program(app_keys=10, lib_keys=10, web=1, db=1, journeys=1), per_hour=1, hours=1,

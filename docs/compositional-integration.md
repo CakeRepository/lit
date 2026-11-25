@@ -161,6 +161,22 @@ or real Git landings.
   trades collisions for waiting; it doesn't add capacity.
 - Hot spots (`hot`, the share of writes drawn by popularity) widen cones and
   multiply overlap runs and conflicts.
+- Retries (`retry`, `max_retries`): a refused or sent-back change comes back
+  rewritten, without fresh passes, and its wait counts from when it first came.
+  At 600 changes an hour on the mid-size program, retrying after 120 s landed
+  all 600 changes instead of 559, and p99 rose from 87 s to 241 s.
+- Flaky units (`flaky`, `confirm`): with a 1% chance that a unit run fails on a
+  tree it passes on, 52 of 67 send-backs at 600 an hour were innocent changes
+  blamed for a flake, and p99 rose from 87 s to 193 s. Rerunning a failed unit
+  once before blaming (62 extra unit runs) brought innocent send-backs to 0
+  and p99 back to 81 s. Confirming a failure is cheap next to sending back a
+  change that was fine.
+- Several runners (`runners`): each proves a snapshot whose cone no other
+  running snapshot holds and lands it by compare-and-swap on main's version
+  (`Frontier.land_if`). At 1,500 an hour, 3 runners against 1 cut p99 from
+  172 s to 88 s. 263 landings lost the race; 248 of them rechecked `needs` on
+  the new main and landed without rerunning anything, and the other 15 reran
+  units that read a change sent back from their own snapshot.
 
 ## Still open
 
@@ -171,9 +187,10 @@ or real Git landings.
   lands. What is open is feeding Frontier's certificates and components into
   `collect`, `run` and `land`, without weakening required checks or
   approvals.
-- **Overload, further.** Retries of refused changes, flaky units and several
-  schedulers contending for the landing compare-and-swap are not modelled
-  yet.
+- **Flakes on real Git.** The simulator shows that a flaky unit should be
+  rerun once before anything is blamed. Real `run` never reruns a failure: it
+  remembers a failed candidate as failed, and blame sends a change back on
+  that one run.
 - **Release bridges on real deploys.** `promotion.py` models the bridges
   (see below), but nothing yet connects a stage to a deploy, a tag or a
   check run.
