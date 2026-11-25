@@ -10,6 +10,7 @@ from unittest.mock import patch
 from concurrent_merge import cli
 from concurrent_merge.engine import Engine, Repo, commit_message
 from concurrent_merge.inputs import verified_changes
+from concurrent_merge.proposal import propose
 
 BASE = "a" * 40
 IDENTITY = dict(
@@ -378,6 +379,87 @@ class AgentInSnapshotTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "eligibility changed"):
                 cli.land(argparse.Namespace(receipt=receipt, repo=self.repo.path))
         live.assert_called_once_with("owner/repo", "main", selection)
+
+    def proposable(self):
+        remote = Repo(Path(self.tmp.name) / "remote.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote.path)], check=True)
+        destination = "https://github.com/owner/repo.git"
+        self.repo.run("config", "url." + remote.path.as_uri() + ".insteadOf", destination)
+        self.repo.run("push", "-q", destination, self.base + ":refs/heads/main")
+        head = self.head("a")
+        changes = verified_changes(
+            self.repo, dict(base=self.base, changes=[dict(number=7, head=head, author="bot")])
+        )
+        with tempfile.TemporaryDirectory() as state:
+            final, passed = Engine(self.repo, Path(state)).batch(self.base, changes, lambda _: "pass")
+        snapshot = dict(
+            repository="owner/repo", branch="main", base=self.base, selection={"prs": [7]},
+            changes=[dict(number=7, head=head, author="bot")], groups=[],
+        )
+        run = Path(self.tmp.name) / "runs" / "batch-p"
+        run.mkdir(parents=True)
+        receipt = run / "result.json"
+        receipt.write_text(json.dumps(dict(snapshot=snapshot, final=final, tested=sorted(passed))))
+        self.repo.run("update-ref", "refs/concurrent-merge/tested/batch-p", final)
+        args = argparse.Namespace(receipt=receipt, repo=self.repo.path, head="lit/batch-1", title=None, notes=None)
+        return args, snapshot, remote, final
+
+    def test_propose_rechecks_the_selection_without_a_merge_queue(self):
+        args, snapshot, remote, final = self.proposable()
+        reads = []
+
+        def live(repository, branch, selection=None):
+            reads.append(selection)
+            return snapshot
+
+        bodies = []
+
+        def gh(argv, **_):
+            if "create" in argv:
+                bodies.append(Path(argv[argv.index("--body-file") + 1]).read_text())
+                return "https://github.com/owner/repo/pull/9"
+            return b"[]"
+
+        with patch("concurrent_merge.proposal.subprocess.check_output", side_effect=gh):
+            with patch("sys.stdout"):
+                propose(args, live)
+        self.assertEqual(reads, [{"prs": [7]}])
+        self.assertEqual(remote.out("rev-parse", "refs/heads/lit/batch-1"), final)
+        self.assertIn("lit combined #7 for review. Each source", bodies[0])
+        self.assertNotIn("merge queue", bodies[0])
+
+    def test_propose_without_a_matching_pr_says_so(self):
+        args, snapshot, _, _ = self.proposable()
+        gone = dict(snapshot, changes=[])
+        with self.assertRaisesRegex(ValueError, "#7 no longer matches the collected selection"):
+            propose(args, lambda *_: gone)
+
+    def test_propose_falls_back_to_rest_for_the_pr(self):
+        args, snapshot, remote, final = self.proposable()
+        calls = []
+
+        def gh(argv, **_):
+            calls.append(argv)
+            if argv[:2] == ["gh", "pr"]:
+                raise subprocess.CalledProcessError(1, argv, b"GraphQL is not available")
+            if "GET" in argv:
+                other = dict(head=dict(ref="lit/batch-10", sha="e" * 40, repo=dict(full_name="owner/repo")),
+                             state="open", html_url="x", merged_at=None)
+                return json.dumps([other]).encode()
+            body = next(a for a in argv if a.startswith("body=@"))[6:]
+            self.assertIn("lit combined #7 for review.", Path(body).read_text())
+            self.assertIn("draft=true", argv)
+            self.assertIn("head=lit/batch-1", argv)
+            return json.dumps(dict(html_url="https://github.com/owner/repo/pull/9")).encode()
+
+        with patch("concurrent_merge.proposal.subprocess.check_output", side_effect=gh):
+            with patch("sys.stdout") as out, patch("sys.stderr"):
+                propose(args, lambda *_: snapshot)
+        self.assertEqual([c[2] for c in calls], ["list", "-X", "create", "-X"])
+        self.assertIn("head=owner:lit/batch-1", calls[1])
+        self.assertEqual(remote.out("rev-parse", "refs/heads/lit/batch-1"), final)
+        printed = "".join(c.args[0] for c in out.write.call_args_list)
+        self.assertIn("https://github.com/owner/repo/pull/9", printed)
 
     def test_invalid_agent_is_refused(self):
         for agent in ["", "   ", "two\nlines", "x" * 101, 7]:

@@ -1030,7 +1030,7 @@ def main():
 
             print(json.dumps(report(args.store, args.job), indent=2))
         elif args.action == "propose":
-            propose(args, queue)
+            propose(args, collect)
         else:
             land(args)
     except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
