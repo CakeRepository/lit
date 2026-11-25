@@ -64,7 +64,8 @@ nothing and returns a reason unless all of these hold:
 
 - **S1, compare-and-swap.** Main is still at version `v`, the version the
   scheduler read when it decided. Every landing bumps `version`. A decision
-  taken on stale evidence can lose a race but can never move main.
+  taken on stale evidence can lose a race but can never move main. In Git the
+  same rule is the push's lease on the tested base (see "Still open").
 - **S2, membership.** Every change in `G` is still admitted (not ejected, not
   landed).
 - **S3, proof.** `needs(G)` is empty: every unit with a kept certificate reading
@@ -151,9 +152,13 @@ or real Git landings.
 
 ## Still open
 
-- **Real Git landing.** Map `version` onto a compare-and-swap of the main ref
-  (`git update-ref` or a push with an expected old value) without weakening
-  required checks or approvals.
+- **Frontier decisions on real candidates.** `concurrent-merge land` already
+  lands by compare-and-swap: its push carries the tested base as the value
+  main must still hold (`cli.publish`, tested against a local remote in
+  `tests/test_landing.py`), so a batch tested on a main that moved never
+  lands. What is open is feeding Frontier's certificates and components into
+  `collect`, `run` and `land`, without weakening required checks or
+  approvals.
 - **Environment in certificates.** Bind certificates to the environment that
   ran them (assumption 3).
 - **Overload and adversarial workloads.** Model backpressure, plus hot spots,

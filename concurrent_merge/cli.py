@@ -635,10 +635,29 @@ def land(args):
     ref = "refs/heads/" + snapshot["branch"]
     repo.run("check-ref-format", ref)
     destination = "https://github.com/" + snapshot["repository"] + ".git"
-    repo.run(
-        "push", "--force-with-lease=" + ref + ":" + base, destination, final + ":" + ref
-    )
+    publish(repo, destination, ref, base, final)
     print(final)
+
+
+def publish(repo, destination, ref, base, final):
+    """Move `ref` at `destination` from `base` to `final`, or leave it as it is.
+
+    This is the landing's compare-and-swap: the push carries `base` as the value the
+    remote ref must still hold, so a batch tested on a main that has since moved never
+    lands, even if the move happened after the eligibility check just before it. A lost
+    race is a ValueError (collect and test again); any other push failure stays an error
+    of its own, so a network or permission problem is not reported as a race."""
+    proc = repo.run(
+        "push", "--porcelain", "--force-with-lease=" + ref + ":" + base,
+        destination, final + ":" + ref, check=False,
+    )
+    if proc.returncode:
+        said = proc.stdout.decode(errors="replace") + proc.stderr.decode(errors="replace")
+        if "stale info" in said:
+            raise ValueError(
+                f"{ref} moved since the batch was tested on {base}; collect and test again"
+            )
+        raise RuntimeError(f"git push: {proc.stderr.decode(errors='replace').strip()}")
 
 
 def intake_options(parser):
