@@ -10,18 +10,20 @@ import sys
 import tempfile
 
 from .engine import Engine, Repo, shared_clone, write_json
-from .inputs import verified_changes
+from .inputs import valid_agent, verified_changes
 from .proposal import propose
 
 
-def queue(repository, branch):
+def split_repository(repository):
     owner, name = repository.split("/")
     if not all(re.fullmatch(r"[A-Za-z0-9_.-]+", s) for s in (owner, name)):
         raise ValueError("Expected a GitHub owner/repository")
-    query = """query($owner:String!,$name:String!,$branch:String!,$ref:String!,$after:String){
-        repository(owner:$owner,name:$name){ref(qualifiedName:$ref){target{oid}}
-          mergeQueue(branch:$branch){entries(first:100,after:$after){pageInfo{hasNextPage endCursor}
-            nodes{state headCommit{oid tree{oid}} pullRequest{number headRefOid baseRefName isDraft state author{login}}}}}}}"""
+    return owner, name
+
+
+def graphql_pages(query, repository, branch):
+    """Yield each page of a repository query, holding the target commit fixed."""
+    owner, name = split_repository(repository)
     args = [
         "gh",
         "api",
@@ -37,25 +39,67 @@ def queue(repository, branch):
         "-f",
         "ref=refs/heads/" + branch,
     ]
-    changes, groups, cursor = {}, {}, []
-    base = None
+    base, cursor = None, []
     while True:
         data = json.loads(subprocess.check_output(args + cursor))["data"]["repository"]
+        if not data["ref"]:
+            raise ValueError(f"Branch {branch} not found in {repository}")
         target = data["ref"]["target"]["oid"]
         if base and base != target:
             raise ValueError("Target advanced during collection; collect again")
         base = target
+        info = yield base, data
+        if not info or not info["hasNextPage"]:
+            return
+        cursor = ["-f", "after=" + info["endCursor"]]
+
+
+def agent_name(body, pattern):
+    """The change's agent from its PR body, or None to keep the login."""
+    if not pattern or not body:
+        return None
+    match = re.search(pattern, body, re.MULTILINE)
+    if not match:
+        return None
+    name = (match.group(1) if match.re.groups else match.group(0)).strip()
+    return name if valid_agent(name) else None
+
+
+def change_row(number, head, author, body, author_pattern):
+    row = dict(number=number, head=head, author=author)
+    agent = agent_name(body, author_pattern)
+    if agent and agent != author:
+        row["agent"] = agent
+    return row
+
+
+QUEUE_QUERY = """query($owner:String!,$name:String!,$branch:String!,$ref:String!,$after:String){
+    repository(owner:$owner,name:$name){ref(qualifiedName:$ref){target{oid}}
+      mergeQueue(branch:$branch){entries(first:100,after:$after){pageInfo{hasNextPage endCursor}
+        nodes{state headCommit{oid tree{oid}} pullRequest{number headRefOid baseRefName isDraft state author{login} body}}}}}}"""
+
+
+def queue(repository, branch, author_pattern=None):
+    changes, groups = {}, {}
+    pages = graphql_pages(QUEUE_QUERY, repository, branch)
+    base, data = next(pages)
+    while True:
         if not data["mergeQueue"]:
-            raise ValueError("This branch has no GitHub merge queue")
+            raise ValueError(
+                "This branch has no GitHub merge queue. "
+                "Pick the changes with --prs, --label or --min-reviews instead"
+            )
         entries = data["mergeQueue"]["entries"]
         for item in entries["nodes"]:
             p = item["pullRequest"]
             if p["state"] == "OPEN" and not p["isDraft"] and p["baseRefName"] == branch:
                 n = p["number"]
-                change = dict(
-                    number=n,
-                    head=p["headRefOid"],
-                    author=(p["author"] or {}).get("login", "ghost"),
+                change = change_row(
+                    n,
+                    p["headRefOid"],
+                    (p["author"] or {}).get("login", "ghost"),
+                    p.get("body"),
+                    author_pattern,
                 )
                 if n in changes and changes[n] != change:
                     raise ValueError("PR changed during collection; collect again")
@@ -67,8 +111,9 @@ def queue(repository, branch):
                         tree=commit["tree"]["oid"],
                         state=item["state"],
                     )
-        info = entries["pageInfo"]
-        if not info["hasNextPage"]:
+        try:
+            base, data = pages.send(entries["pageInfo"])
+        except StopIteration:
             return dict(
                 repository=repository,
                 branch=branch,
@@ -76,7 +121,105 @@ def queue(repository, branch):
                 changes=list(changes.values()),
                 groups=list(groups.values()),
             )
-        cursor = ["-f", "after=" + info["endCursor"]]
+
+
+PULLS_QUERY = """query($owner:String!,$name:String!,$branch:String!,$ref:String!,$after:String){
+    repository(owner:$owner,name:$name){ref(qualifiedName:$ref){target{oid}}
+      pullRequests(states:OPEN,baseRefName:$branch,first:50,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){
+        pageInfo{hasNextPage endCursor}
+        nodes{number headRefOid baseRefName isDraft author{login} body
+          labels(first:100){nodes{name}}
+          latestOpinionatedReviews(first:100){nodes{state author{login} commit{oid}}}}}}}"""
+
+
+def approvals(pr):
+    """Distinct reviewers whose latest review approves the PR's current head."""
+    return len(
+        {
+            (r["author"] or {}).get("login")
+            for r in pr["latestOpinionatedReviews"]["nodes"]
+            if r["state"] == "APPROVED"
+            and r["author"]
+            and (r["commit"] or {}).get("oid") == pr["headRefOid"]
+        }
+    )
+
+
+def selection_of(prs=None, label=None, min_reviews=0):
+    selection = {}
+    if prs:
+        if any(type(n) is not int or n <= 0 for n in prs):
+            raise ValueError("PR numbers must be positive integers")
+        selection["prs"] = sorted(set(prs))
+    if label:
+        selection["label"] = label
+    if min_reviews:
+        if type(min_reviews) is not int or min_reviews < 0:
+            raise ValueError("--min-reviews must be a positive integer")
+        selection["min_reviews"] = min_reviews
+    return selection
+
+
+def pulls(repository, branch, selection, author_pattern=None):
+    """Snapshot open PRs picked by number, label or approvals, for repos without a merge queue."""
+    if not selection:
+        raise ValueError("Pick changes with --prs, --label or --min-reviews")
+    wanted = set(selection.get("prs", ()))
+    label, minimum = selection.get("label"), selection.get("min_reviews", 0)
+    changes, seen = {}, set()
+    pages = graphql_pages(PULLS_QUERY, repository, branch)
+    base, data = next(pages)
+    while True:
+        found = data["pullRequests"]
+        for p in found["nodes"]:
+            n = p["number"]
+            if wanted and n not in wanted:
+                continue
+            seen.add(n)
+            labels = {node["name"] for node in p["labels"]["nodes"]}
+            if p["isDraft"] or p["baseRefName"] != branch:
+                continue
+            if label and label not in labels:
+                continue
+            if approvals(p) < minimum:
+                continue
+            change = change_row(
+                n,
+                p["headRefOid"],
+                (p["author"] or {}).get("login", "ghost"),
+                p.get("body"),
+                author_pattern,
+            )
+            if n in changes and changes[n] != change:
+                raise ValueError("PR changed during collection; collect again")
+            changes[n] = change
+        try:
+            base, data = pages.send(found["pageInfo"])
+        except StopIteration:
+            break
+    if missing := sorted(wanted - seen):
+        raise ValueError(
+            f"Not open against {branch}: " + ", ".join(f"#{n}" for n in missing)
+        )
+    if wanted and (skipped := sorted(wanted - changes.keys())):
+        raise ValueError(
+            "Draft or not matching the other rules: "
+            + ", ".join(f"#{n}" for n in skipped)
+        )
+    return dict(
+        repository=repository,
+        branch=branch,
+        base=base,
+        selection=selection,
+        changes=sorted(changes.values(), key=lambda p: p["number"]),
+        groups=[],
+    )
+
+
+def collect(repository, branch, selection=None, author_pattern=None):
+    if selection:
+        return pulls(repository, branch, selection, author_pattern)
+    return queue(repository, branch, author_pattern)
 
 
 def run_test(repo, oid, command, directory):
@@ -375,7 +518,7 @@ def land(args):
     ):
         raise ValueError("No matching tested batch ref")
     repo.run("merge-base", "--is-ancestor", base, final)
-    live = queue(snapshot["repository"], snapshot["branch"])
+    live = collect(snapshot["repository"], snapshot["branch"], snapshot.get("selection"))
     ready = {p["number"]: p["head"] for p in live["changes"]}
     if live["base"] != base or any(
         ready.get(p["number"]) != p["head"]
@@ -400,12 +543,36 @@ def main():
     cmds = p.add_subparsers(dest="action", required=True)
     c = cmds.add_parser(
         "collect",
-        help="Read the current GitHub merge queue and fetch its pinned inputs into a bare copy",
+        help="Snapshot the ready changes (the GitHub merge queue, or PRs picked by number, "
+        "label or approvals) and fetch their pinned inputs into a bare copy",
     )
     c.add_argument("repository")
     c.add_argument("--branch", default="main")
     c.add_argument("--out", type=Path, required=True)
     c.add_argument("--repo", type=Path, required=True)
+    c.add_argument(
+        "--prs",
+        nargs="+",
+        type=int,
+        metavar="N",
+        help="Collect these open PRs instead of the merge queue",
+    )
+    c.add_argument(
+        "--label", help="Collect open PRs carrying this label instead of the merge queue"
+    )
+    c.add_argument(
+        "--min-reviews",
+        type=int,
+        default=0,
+        metavar="K",
+        help="Collect open PRs with at least K approvals on their current head",
+    )
+    c.add_argument(
+        "--author-pattern",
+        metavar="REGEX",
+        help="Read each change's agent from its PR body (group 1 of the first match); "
+        "unmatched PRs keep their GitHub login",
+    )
     preview = cmds.add_parser(
         "preview", help="Predict the combined tree before original PRs enter the queue"
     )
@@ -660,7 +827,17 @@ def main():
     args = p.parse_args()
     try:
         if args.action == "collect":
-            snapshot = queue(args.repository, args.branch)
+            if args.author_pattern:
+                try:
+                    re.compile(args.author_pattern)
+                except re.error as exc:
+                    raise ValueError(f"--author-pattern is not a valid regex: {exc}")
+            snapshot = collect(
+                args.repository,
+                args.branch,
+                selection_of(args.prs, args.label, args.min_reviews),
+                args.author_pattern,
+            )
             repo = Repo(args.repo)
             if repo.out("rev-parse", "--is-bare-repository") != "true":
                 raise ValueError("Use a dedicated bare clone")

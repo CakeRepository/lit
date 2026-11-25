@@ -7,7 +7,7 @@ Test several reviewed PRs in one checkout and land the tested commit with one Gi
 lit is built to be driven by coding agents. Many agents can open PRs at once; lit tests them together on one runner, lands the passing ones as ordinary Git commits, and hands each failure or overlap back to the change that caused it.
 
 1. Install it: `python -m pip install git+https://github.com/CakeRepository/lit.git` (Python 3.12+, Git 2.48+). The command is `concurrent-merge`, and `concurrent-merge --help` lists every subcommand.
-2. Snapshot what is ready: `concurrent-merge collect OWNER/REPO --branch main --repo batch.git --out queue.json` reads the GitHub merge queue. Any other source of ready changes can write the same JSON shown below.
+2. Snapshot what is ready: `concurrent-merge collect OWNER/REPO --branch main --repo batch.git --out queue.json` reads the GitHub merge queue. A repository without one picks its changes with `--prs 133 134 135`, `--label lit-ready` or `--min-reviews 2` (see "Repositories without a merge queue"). Any other source of ready changes can write the same JSON shown below.
 3. Test the batch: `concurrent-merge run queue.json --repo batch.git --state batch-state --test ./your-test-command`. Exit 0 from your command accepts a candidate and exit 1 starts bisection.
 4. Read the receipt: `run` prints the path of `result.json`. It lists the passing subset, and `attempts.json` beside it lists every candidate and failure. A held change has a conflict file under `batch-state/conflicts` with the exact Git blobs to fix.
 5. Fix a conflict: write the agreed file bytes and record your vote with `concurrent-merge agree` (below). Rerun step 3.
@@ -39,6 +39,30 @@ Use the repository's full test command in place of `./run-full-suite`. The exist
   ]
 }
 ```
+
+`collect` fetches each PR's `refs/pull/N/head` into the bare copy, so a plain `git clone --bare` is enough.
+
+### Repositories without a merge queue
+
+When readiness is decided by people or a coordinator rather than a merge queue, name the changes:
+
+```sh
+concurrent-merge collect OWNER/REPO --repo batch.git --out queue.json --prs 133 134 135
+concurrent-merge collect OWNER/REPO --repo batch.git --out queue.json --label lit-ready
+concurrent-merge collect OWNER/REPO --repo batch.git --out queue.json --min-reviews 2
+```
+
+Each reads the open, non-draft PRs against `--branch` and their current heads. `--min-reviews K` counts distinct reviewers whose latest review approves the current head, so a push after approval drops a PR until it is approved again. The rules combine: `--label lit-ready --min-reviews 1` takes labelled PRs with at least one approval. A PR named with `--prs` that is closed, a draft, against another branch or outside the other rules stops the collection with an error rather than being skipped. The snapshot records the rules as `selection`, and `land` checks the same rules again before it pushes.
+
+### Several agents on one GitHub login
+
+lit hands a failure or a conflict back to the change's author, which is its GitHub login by default. When several agents open PRs from one shared account, give each change an `agent`:
+
+```json
+{"number": 42, "author": "shared-bot", "agent": "reviewer-bot-2", "head": "<full reviewed PR head ID>"}
+```
+
+`collect --author-pattern REGEX` fills it from each PR body, from group 1 of the first match, for example `--author-pattern '^Bot: (.+)$'`. It works with the merge queue and with the rules above. A PR whose body has no match keeps its login. The agent appears in receipts, conflict files and votes, and the batch commit carries it as `PR-Author:` with the login kept as `PR-Login:`.
 
 Each test runs in a fresh detached checkout. The test command owns its suite and runs with the runner's permissions. Exit 0 accepts that exact candidate. Exit 1 triggers bisection. Other exit codes stop the operation as an infrastructure error. When a half passes, the engine tests the next half on top of it. This catches changes that pass alone and fail together. A failed singleton goes back to its author with the base on which it failed. The batch receipt lists the passing subset, and its sibling `attempts.json` records every candidate, assembly method, held PR, and failure.
 
