@@ -60,7 +60,8 @@ class Frontier:
     meta: dict = field(default_factory=dict)  # id -> what an agent needs (title, intent, diffs per key)
     certs: dict = field(default_factory=dict)  # unit -> [Certificate], newest last
     reads: dict = field(default_factory=dict)  # unit -> keys its newest passing run read
-    readers: dict = field(default_factory=dict)  # key -> units that read it (the program map)
+    held: dict = field(default_factory=dict)  # unit -> {key: how many kept certificates read it}
+    readers: dict = field(default_factory=dict)  # key -> units with a kept certificate reading it (the program map)
     writer: dict = field(default_factory=dict)  # key -> admitted change writing it
     landed: list = field(default_factory=list)  # in landing order
     done: set = field(default_factory=set)  # the same, for lookups
@@ -109,34 +110,56 @@ class Frontier:
         if cert is None:
             keys = self.reads[unit] if keys is None else keys
             cert = self.snapshot(unit, keys, seconds, members)
-        keys = list(cert.inputs)
         kept = self.certs.setdefault(unit, [])
         kept.append(cert)
+        self._hold(unit, cert, 1)
         # A unit read by several in-flight changes is an overlap and needs a combined run anyway,
-        # so only the newest few certificates can still prove anything.
-        del kept[:-KEEP]
-        for key in self.reads.get(unit, ()):
-            self.readers.get(key, set()).discard(unit)
-        self.reads[unit] = set(keys)
-        for key in keys:
-            self.readers.setdefault(key, set()).add(unit)
+        # so only the newest few certificates can still prove anything. The newest one that
+        # proves main itself stays, so trimming never leaves main unproven.
+        if len(kept) > KEEP:
+            drop = kept[:-KEEP]
+            base = next((c for c in reversed(drop) if self._fits(c, set())), None)
+            if base is not None and not any(self._fits(c, set()) for c in kept[-KEEP:]):
+                drop.remove(base)
+            kept[:] = [c for c in kept if not any(c is d for d in drop)]
+            for old in drop:
+                self._hold(unit, old, -1)
+        self.reads[unit] = set(cert.inputs)
         return cert
+
+    def _hold(self, unit, cert, step):
+        """Index the keys a kept certificate read, so the cone covers every certificate that can prove."""
+        held = self.held.setdefault(unit, {})
+        for key in cert.inputs:
+            n = held.get(key, 0) + step
+            if n > 0:
+                held[key] = n
+                self.readers.setdefault(key, set()).add(unit)
+            else:
+                held.pop(key, None)
+                self.readers.get(key, set()).discard(unit)
+
+    def _fits(self, cert, members):
+        return all(self.content(k, members) == d for k, d in cert.inputs.items())
 
     def proves(self, unit, members=None):
         for cert in reversed(self.certs.get(unit, ())):
-            if all(self.content(k, members) == d for k, d in cert.inputs.items()):
+            if self._fits(cert, members):
                 return cert
         return None
 
     # The map's questions, all by index
 
     def cone(self, cid):
-        """Units whose newest run read something the change writes."""
+        """Units with a kept certificate that read something the change writes.
+
+        Not just the newest run: a unit's newest run may be on another change whose code
+        reads different inputs, while an older certificate is what proves it on main."""
         return set().union(*(self.readers.get(k, set()) for k in self.changes[cid])) if self.changes[cid] else set()
 
     def touching(self, unit):
-        """Admitted changes writing something the unit read."""
-        return sorted({self.writer[k] for k in self.reads.get(unit, ()) if k in self.writer})
+        """Admitted changes writing something a kept certificate of the unit read."""
+        return sorted({self.writer[k] for k in self.held.get(unit, ()) if k in self.writer})
 
     def components(self, cids=None):
         """Changes grouped so that no unit reads inputs of two groups."""
