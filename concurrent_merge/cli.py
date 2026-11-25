@@ -82,7 +82,14 @@ QUEUE_QUERY = """query($owner:String!,$name:String!,$branch:String!,$ref:String!
 def queue(repository, branch, author_pattern=None):
     changes, groups = {}, {}
     pages = graphql_pages(QUEUE_QUERY, repository, branch)
-    base, data = next(pages)
+    try:
+        base, data = next(pages)
+    except subprocess.CalledProcessError:
+        # GitHub's merge queue has no REST API, so there is nothing to fall back to.
+        raise ValueError(
+            "Could not read the merge queue: GitHub GraphQL refused the request. "
+            "Pick the changes with --prs, --label or --min-reviews, which also work over REST"
+        )
     while True:
         if not data["mergeQueue"]:
             raise ValueError(
@@ -160,6 +167,109 @@ def selection_of(prs=None, label=None, min_reviews=0):
     return selection
 
 
+def open_pulls_graphql(repository, branch):
+    nodes = []
+    pages = graphql_pages(PULLS_QUERY, repository, branch)
+    base, data = next(pages)
+    while True:
+        found = data["pullRequests"]
+        nodes.extend(found["nodes"])
+        try:
+            base, data = pages.send(found["pageInfo"])
+        except StopIteration:
+            return base, nodes
+
+
+def rest(path, **query):
+    args = ["gh", "api", "-X", "GET", path]
+    for key, value in query.items():
+        args += ["-f", f"{key}={value}"]
+    return json.loads(subprocess.check_output(args))
+
+
+def rest_pages(path, **query):
+    page = 1
+    while True:
+        rows = rest(path, per_page=100, page=page, **query)
+        yield from rows
+        if len(rows) < 100:
+            return
+        page += 1
+
+
+def rest_target(owner, name, branch):
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or ".." in branch:
+        raise ValueError("Unsupported branch name")
+    try:
+        ref = rest(f"repos/{owner}/{name}/git/ref/heads/{branch}")
+    except subprocess.CalledProcessError:
+        raise ValueError(f"Branch {branch} not found in {owner}/{name}")
+    if ref["object"]["type"] != "commit":
+        raise ValueError(f"Branch {branch} does not point at a commit")
+    return ref["object"]["sha"]
+
+
+def latest_reviews(owner, name, number):
+    """Each reviewer's latest approval or change request, as GraphQL's latestOpinionatedReviews."""
+    latest = {}
+    for review in rest_pages(f"repos/{owner}/{name}/pulls/{number}/reviews"):
+        login = (review.get("user") or {}).get("login")
+        if not login:
+            continue
+        if review["state"] in ("APPROVED", "CHANGES_REQUESTED"):
+            latest[login] = dict(
+                state=review["state"],
+                author={"login": login},
+                commit={"oid": review.get("commit_id")},
+            )
+        elif review["state"] == "DISMISSED":
+            latest.pop(login, None)
+    return list(latest.values())
+
+
+def open_pulls_rest(repository, branch, reviews):
+    """The same PR records as PULLS_QUERY, from GitHub's REST API."""
+    owner, name = split_repository(repository)
+    base = rest_target(owner, name, branch)
+    nodes = []
+    for pr in rest_pages(f"repos/{owner}/{name}/pulls", state="open", base=branch):
+        nodes.append(
+            dict(
+                number=pr["number"],
+                headRefOid=pr["head"]["sha"],
+                baseRefName=pr["base"]["ref"],
+                isDraft=bool(pr.get("draft")),
+                author={"login": pr["user"]["login"]} if pr.get("user") else None,
+                body=pr.get("body") or "",
+                labels={"nodes": [{"name": l["name"]} for l in pr.get("labels", [])]},
+                latestOpinionatedReviews={
+                    "nodes": latest_reviews(owner, name, pr["number"]) if reviews else []
+                },
+            )
+        )
+    if rest_target(owner, name, branch) != base:
+        raise ValueError("Target advanced during collection; collect again")
+    return base, nodes
+
+
+def open_pulls(repository, branch, reviews=False):
+    """Open PRs into the branch and its target commit.
+
+    LIT_GITHUB_API picks the transport: graphql, rest, or auto (default), which
+    tries GraphQL and falls back to REST when GitHub or a proxy refuses it."""
+    api = os.environ.get("LIT_GITHUB_API", "auto")
+    if api not in ("auto", "graphql", "rest"):
+        raise ValueError("LIT_GITHUB_API must be auto, graphql or rest")
+    if api != "rest":
+        try:
+            return open_pulls_graphql(repository, branch)
+        except subprocess.CalledProcessError:
+            if api == "graphql":
+                raise
+            print("lit: GitHub GraphQL refused; reading PRs over REST", file=sys.stderr)
+    return open_pulls_rest(repository, branch, reviews)
+
+
 def pulls(repository, branch, selection, author_pattern=None):
     """Snapshot open PRs picked by number, label or approvals, for repos without a merge queue."""
     if not selection:
@@ -167,36 +277,29 @@ def pulls(repository, branch, selection, author_pattern=None):
     wanted = set(selection.get("prs", ()))
     label, minimum = selection.get("label"), selection.get("min_reviews", 0)
     changes, seen = {}, set()
-    pages = graphql_pages(PULLS_QUERY, repository, branch)
-    base, data = next(pages)
-    while True:
-        found = data["pullRequests"]
-        for p in found["nodes"]:
-            n = p["number"]
-            if wanted and n not in wanted:
-                continue
-            seen.add(n)
-            labels = {node["name"] for node in p["labels"]["nodes"]}
-            if p["isDraft"] or p["baseRefName"] != branch:
-                continue
-            if label and label not in labels:
-                continue
-            if approvals(p) < minimum:
-                continue
-            change = change_row(
-                n,
-                p["headRefOid"],
-                (p["author"] or {}).get("login", "ghost"),
-                p.get("body"),
-                author_pattern,
-            )
-            if n in changes and changes[n] != change:
-                raise ValueError("PR changed during collection; collect again")
-            changes[n] = change
-        try:
-            base, data = pages.send(found["pageInfo"])
-        except StopIteration:
-            break
+    base, nodes = open_pulls(repository, branch, reviews=bool(minimum))
+    for p in nodes:
+        n = p["number"]
+        if wanted and n not in wanted:
+            continue
+        seen.add(n)
+        labels = {node["name"] for node in p["labels"]["nodes"]}
+        if p["isDraft"] or p["baseRefName"] != branch:
+            continue
+        if label and label not in labels:
+            continue
+        if approvals(p) < minimum:
+            continue
+        change = change_row(
+            n,
+            p["headRefOid"],
+            (p["author"] or {}).get("login", "ghost"),
+            p.get("body"),
+            author_pattern,
+        )
+        if n in changes and changes[n] != change:
+            raise ValueError("PR changed during collection; collect again")
+        changes[n] = change
     if missing := sorted(wanted - seen):
         raise ValueError(
             f"Not open against {branch}: " + ", ".join(f"#{n}" for n in missing)

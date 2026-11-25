@@ -54,6 +54,8 @@ concurrent-merge collect OWNER/REPO --repo batch.git --out queue.json --min-revi
 
 Each reads the open, non-draft PRs against `--branch` and their current heads. `--min-reviews K` counts distinct reviewers whose latest review approves the current head, so a push after approval drops a PR until it is approved again. The rules combine: `--label lit-ready --min-reviews 1` takes labelled PRs with at least one approval. A PR named with `--prs` that is closed, a draft, against another branch or outside the other rules stops the collection with an error rather than being skipped. The snapshot records the rules as `selection`, and `land` checks the same rules again before it pushes.
 
+These rules, and the `land` that rechecks them, read GitHub over GraphQL and fall back to the REST API when GraphQL is refused, as some proxies and sandboxed agent sessions do. Set `LIT_GITHUB_API=rest` to skip GraphQL, or `LIT_GITHUB_API=graphql` to turn the fallback off. GitHub's merge queue has no REST API, so plain `collect` still needs GraphQL.
+
 ### Several agents on one GitHub login
 
 lit hands a failure or a conflict back to the change's author, which is its GitHub login by default. When several agents open PRs from one shared account, give each change an `agent`:

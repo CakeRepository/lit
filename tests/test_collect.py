@@ -150,6 +150,124 @@ class CollectWithoutMergeQueueTests(unittest.TestCase):
         self.assertEqual(cli.selection_of(), {})
 
 
+def rest_pr(number, head=None, **extra):
+    row = dict(
+        number=number,
+        head={"sha": head or f"{number:040x}"},
+        base={"ref": "main"},
+        draft=False,
+        user={"login": "shared-bot"},
+        body=None,
+        labels=[],
+    )
+    row.update(extra)
+    return row
+
+
+class FakeREST:
+    """Refuses GraphQL the way a proxy does and answers `gh api -X GET` REST paths."""
+
+    def __init__(self, pulls, reviews=None, targets=(BASE,)):
+        self.pulls, self.reviews = pulls, reviews or {}
+        self.targets, self.calls = list(targets), []
+
+    def __call__(self, args):
+        self.calls.append(args)
+        if args[2] == "graphql":
+            raise subprocess.CalledProcessError(1, args, b"GraphQL is not available")
+        path = args[4]
+        query = dict(a.split("=", 1) for a in args[5:] if "=" in a)
+        if path.endswith("/git/ref/heads/main"):
+            oid = self.targets.pop(0) if len(self.targets) > 1 else self.targets[0]
+            return json.dumps(dict(object=dict(sha=oid, type="commit"))).encode()
+        if "/git/ref/heads/" in path:
+            raise subprocess.CalledProcessError(1, args, b"Not Found")
+        rows = self.pulls if path.endswith("/pulls") else self.reviews[int(path.split("/")[4])]
+        if path.endswith("/pulls"):
+            assert query["state"] == "open" and query["base"] == "main", query
+        size, page = int(query["per_page"]), int(query["page"])
+        return json.dumps(rows[(page - 1) * size : page * size]).encode()
+
+
+def rest_collect(fake, selection, pattern=None, api=None):
+    env = {"LIT_GITHUB_API": api} if api else {}
+    with patch.object(cli.subprocess, "check_output", fake), patch.dict(cli.os.environ, env):
+        with patch("sys.stderr"):
+            return cli.collect("owner/repo", "main", selection, pattern)
+
+
+class RestFallbackTests(unittest.TestCase):
+    def test_refused_graphql_falls_back_to_rest_with_the_same_rules(self):
+        ready = [{"name": "lit-ready"}]
+        fake = FakeREST(
+            [
+                rest_pr(1, labels=ready, body="Bot: agent-a"),
+                rest_pr(2, labels=ready, draft=True),
+                rest_pr(3),
+                rest_pr(4, labels=ready, base={"ref": "other"}),
+            ]
+        )
+        snapshot = rest_collect(fake, cli.selection_of(label="lit-ready"), r"^Bot: (.+)$")
+        self.assertEqual(snapshot["base"], BASE)
+        self.assertEqual(
+            snapshot["changes"],
+            [dict(number=1, head=f"{1:040x}", author="shared-bot", agent="agent-a")],
+        )
+        self.assertEqual(snapshot["selection"], {"label": "lit-ready"})
+        self.assertEqual(fake.calls[0][2], "graphql")
+        self.assertFalse(any("/reviews" in " ".join(c) for c in fake.calls))
+
+    def test_rest_pages_through_every_open_pr(self):
+        fake = FakeREST([rest_pr(n) for n in range(1, 151)])
+        snapshot = rest_collect(fake, cli.selection_of([2, 150]), api="rest")
+        self.assertEqual([c["number"] for c in snapshot["changes"]], [2, 150])
+        self.assertFalse(any(c[2] == "graphql" for c in fake.calls))
+        with self.assertRaisesRegex(ValueError, "Not open against main: #151"):
+            rest_collect(FakeREST([rest_pr(1)]), cli.selection_of([1, 151]), api="rest")
+
+    def test_rest_counts_each_reviewers_latest_approval_on_the_current_head(self):
+        head, old = "b" * 40, "c" * 40
+
+        def review(login, state, commit=head):
+            return dict(user={"login": login}, state=state, commit_id=commit)
+
+        fake = FakeREST(
+            [rest_pr(1, head), rest_pr(2, head), rest_pr(3, head), rest_pr(4, head)],
+            reviews={
+                1: [review("x", "APPROVED"), review("y", "COMMENTED"), review("y", "APPROVED")],
+                2: [review("x", "APPROVED"), review("y", "APPROVED", old)],
+                3: [review("x", "APPROVED"), review("y", "APPROVED"), review("y", "CHANGES_REQUESTED")],
+                4: [review("x", "APPROVED"), review("y", "APPROVED"), review("y", "DISMISSED")],
+            },
+        )
+        snapshot = rest_collect(fake, cli.selection_of(min_reviews=2))
+        self.assertEqual([c["number"] for c in snapshot["changes"]], [1])
+
+    def test_rest_target_moving_during_collection_stops_it(self):
+        fake = FakeREST([rest_pr(1)], targets=(BASE, "d" * 40))
+        with self.assertRaisesRegex(ValueError, "Target advanced"):
+            rest_collect(fake, cli.selection_of([1]), api="rest")
+
+    def test_missing_branch_over_rest(self):
+        fake = FakeREST([rest_pr(1)])
+        with patch.object(cli.subprocess, "check_output", fake), patch.dict(
+            cli.os.environ, {"LIT_GITHUB_API": "rest"}
+        ):
+            with self.assertRaisesRegex(ValueError, "Branch dev not found"):
+                cli.collect("owner/repo", "dev", cli.selection_of([1]))
+
+    def test_graphql_only_does_not_fall_back(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            rest_collect(FakeREST([rest_pr(1)]), cli.selection_of([1]), api="graphql")
+        with self.assertRaisesRegex(ValueError, "LIT_GITHUB_API"):
+            rest_collect(FakeREST([]), cli.selection_of([1]), api="soap")
+
+    def test_merge_queue_without_graphql_points_at_rest_rules(self):
+        with patch.object(cli.subprocess, "check_output", FakeREST([])):
+            with self.assertRaisesRegex(ValueError, "also work over REST"):
+                cli.collect("owner/repo", "main")
+
+
 class AgentOverrideTests(unittest.TestCase):
     PATTERN = r"^Agents Hangout bot: (.+)$"
 
