@@ -140,9 +140,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: app
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3  # pin a commit SHA
         with:
-          app-id: ${{ secrets.LIT_APP_ID }}
+          client-id: ${{ secrets.LIT_APP_CLIENT_ID }}
           private-key: ${{ secrets.LIT_APP_PRIVATE_KEY }}
       - uses: CakeRepository/lit/actions/batcher@main  # pin a commit SHA
         with:
