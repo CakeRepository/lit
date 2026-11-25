@@ -480,6 +480,38 @@ class RunnerTests(unittest.TestCase):
         f = self.frontier(dict(self.env, EXTRA="1"))  # a variable the record never saw
         self.assertIsNone(f.proves("test_b", set()))
 
+    def store_with(self, recorded, ignored):
+        import json
+        from pathlib import Path
+        from concurrent_merge.footprint import environment
+        job = Path(self.tmp.name) / "env-store" / "suite"
+        (job / "units").mkdir(parents=True, exist_ok=True)
+        bundle = dict(kind="lit-unit-footprints", commit="abc",
+                      environment=environment(recorded, ignored), ignored_environment=ignored,
+                      tracked={"b.py": ["100644", "oid-b"]},
+                      units={"test_b": dict(tracked=["b.py"], external=[], seconds=1.0)})
+        (job / "units" / "x.json").write_text(json.dumps(bundle))
+        return str(job.parent)
+
+    def proves_here(self, store, env):
+        from concurrent_merge.frontier import from_store, runner_inputs
+        f = from_store(store, "suite")
+        f.base.update(runner_inputs(f.readers, env))
+        return f.proves("test_b", set())
+
+    def test_the_shell_s_directory_does_not_count_but_strict_records_keep_it(self):
+        from concurrent_merge.footprint import RUN_SPECIFIC_ENV
+        here = dict(self.env, PWD="/work/batch-2")
+        # Recorded before PWD was run-specific: it still holds PWD, from another directory.
+        older = [p for p in RUN_SPECIFIC_ENV if p != "PWD"]
+        store = self.store_with(dict(self.env, PWD="/work/checkout"), older)
+        self.assertIsNotNone(self.proves_here(store, here))
+        self.assertIsNone(self.proves_here(store, dict(here, LANG="de_DE")))
+        # A --strict-env record compares every variable it holds, PWD included.
+        strict = self.store_with(dict(self.env, PWD="/work/checkout"), [])
+        self.assertIsNone(self.proves_here(strict, here))
+        self.assertIsNotNone(self.proves_here(strict, dict(here, PWD="/work/checkout")))
+
     def test_a_new_toolchain_invalidates_only_the_units_that_read_it(self):
         self.tool.write_text("v2")
         f = self.frontier(self.env)

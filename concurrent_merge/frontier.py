@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 import os
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 KEEP = 16  # certificates kept per unit
@@ -286,9 +287,25 @@ def environment_input(ignored):
     return ENVIRONMENT + json.dumps(sorted(ignored))
 
 
-def environment_digest(recorded):
-    """One digest for a record's {variable: value digest}."""
-    return sha256(json.dumps(recorded, sort_keys=True).encode("utf8")).hexdigest()
+def comparable(ignored):
+    """The patterns a record's environment is compared without.
+
+    A record that used lit's run-specific list (it ignores SHLVL; --strict-env records do not)
+    is also compared without every variable lit counts as run-specific now, as
+    footprint.environment_changes does, so a record made before a variable joined the list
+    still proves. A --strict-env record is compared on everything it holds.
+    """
+    from .footprint import RUN_SPECIFIC_ENV
+
+    ignored = list(ignored)
+    return [*ignored, *RUN_SPECIFIC_ENV] if "SHLVL" in ignored else ignored
+
+
+def environment_digest(recorded, ignored=()):
+    """One digest for a record's {variable: value digest}, without what `comparable` drops."""
+    drop = comparable(ignored)
+    kept = {name: d for name, d in recorded.items() if not any(fnmatchcase(name, p) for p in drop)}
+    return sha256(json.dumps(kept, sort_keys=True).encode("utf8")).hexdigest()
 
 
 def runner_inputs(keys, env=None):
@@ -299,7 +316,8 @@ def runner_inputs(keys, env=None):
     out = {}
     for key in keys:
         if key.startswith(ENVIRONMENT):
-            out[key] = environment_digest(environment(env, json.loads(key[len(ENVIRONMENT):])))
+            ignored = json.loads(key[len(ENVIRONMENT):])
+            out[key] = environment_digest(environment(env, comparable(ignored)), ignored)
         elif key.startswith("/"):
             out[key] = file_digest(key)
     return out
@@ -367,8 +385,9 @@ def _certificates(store, job, runner):
                         inputs[f"{file}#{symbol}"] = table.get(symbol)
             if runner:
                 if "environment" in bundle:
-                    key = environment_input(bundle.get("ignored_environment", ()))
-                    inputs[key] = environment_digest(bundle["environment"])
+                    ignored = bundle.get("ignored_environment", ())
+                    key = environment_input(ignored)
+                    inputs[key] = environment_digest(bundle["environment"], ignored)
                 for path in unit.get("external", ()):
                     if path.startswith("/") and not any(under(path, p) for p in MACHINE_LOCAL):
                         inputs[path] = bundle.get("external", {}).get(path)
