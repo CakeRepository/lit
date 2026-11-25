@@ -52,6 +52,7 @@ RUN_SPECIFIC_ENV = (
     "INVOCATION_ID",
     "JOURNAL_STREAM",
     "OLDPWD",
+    "PWD",  # the launching shell's directory, not the test's: os.getcwd() is the checkout
     "SHLVL",
     "_",
 )

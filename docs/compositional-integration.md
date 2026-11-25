@@ -245,7 +245,11 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    unread host file doesn't matter.
    *Limits:* the digest only covers what the record names. Machine-local
    files (`/etc/hosts` and the like) are left out, as the unit store's check
-   leaves them out.
+   leaves them out. Variables lit counts as run-specific (`OLDPWD`, `SHLVL`,
+   and `PWD`, the launching shell's directory) are left out of both sides
+   unless the record was made with `--strict-env`. Before `PWD` was on that
+   list, every certificate from lit's own suite was stale in each batch,
+   because each batch runs from a new directory.
 3. **Certificates from each PR's own CI** (done, in the shadow).
    `frontier.from_store(..., proofs=DIR)` reads a store that `concurrent-merge
    proof take` filled and adds its records as certificates marked `proof`.
