@@ -603,4 +603,18 @@ class IntakeCommandTests(unittest.TestCase):
         intake_main.assert_called_once_with(
             ["--repo-dir", "/tmp/lit", "tick", "--label", "lit-ready"],
             repository="owner/repo", branch="dev", context="CI / tests", original_prs_only=False,
+            max_batch=None,
         )
+
+    def test_cli_reads_max_batch_as_auto_or_a_number(self):
+        from concurrent_merge.cli import main
+
+        for value, expected in (("auto", "auto"), ("12", 12)):
+            argv = ["concurrent-merge", "intake", "owner/repo", "--context", "CI / tests",
+                    "--max-batch", value, "tick"]
+            with patch("sys.argv", argv), patch("concurrent_merge.intake.main") as intake_main:
+                self.assertEqual(main(), 0)
+            self.assertEqual(intake_main.call_args.kwargs["max_batch"], expected)
+        argv = ["concurrent-merge", "intake", "owner/repo", "--context", "c", "--max-batch", "0", "tick"]
+        with patch("sys.argv", argv), patch("sys.stderr"), self.assertRaises(SystemExit):
+            main()

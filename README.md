@@ -150,6 +150,8 @@ jobs:
           context: CI / tests
 ```
 
+With many agents, more PRs pass alone and fail together, and one batch of everything spends most of its runs halving. `--max-batch N` (the action's `max-batch` input) caps a fresh batch at the N lowest-numbered ready PRs; the rest stay pinned for the next one. `--max-batch auto` sizes each batch from the recent share of PRs that came back red, using Hwang's binary splitting: about one in ten red gives batches of 8, one in a hundred gives 64, and it starts at 32. The counts live in the intake's own record under `refs/heads/lit/active/BRANCH`.
+
 Use a GitHub App token: branches and PRs created with the workflow's own `GITHUB_TOKEN` start no checks. The App needs read and write access to contents, pull requests and workflows, and read access to actions, checks, commit statuses and issues. The other intake actions are `ready N...` to pin named PRs, `drain [--no-wait]` to resume, `withdraw N HEAD` to take a pin back, and `report N` to count the workflow runs a landed batch used.
 
 ## Record what a test job consumed

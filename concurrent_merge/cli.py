@@ -679,6 +679,15 @@ def publish(repo, destination, ref, base, final):
         raise RuntimeError(f"git push: {proc.stderr.decode(errors='replace').strip()}")
 
 
+def max_batch_option(text):
+    """--max-batch: "auto" or a whole number of PRs."""
+    if text == "auto":
+        return text
+    if not re.fullmatch(r"[1-9]\d*", text):
+        raise argparse.ArgumentTypeError("expected auto or a positive whole number")
+    return int(text)
+
+
 def intake_options(parser):
     parser.add_argument("repository")
     parser.add_argument("--branch", default="main")
@@ -689,6 +698,12 @@ def intake_options(parser):
         "--original-prs-only",
         action="store_true",
         help="Queue the original PRs one by one instead of a combined batch PR",
+    )
+    parser.add_argument(
+        "--max-batch",
+        type=max_batch_option,
+        metavar="N|auto",
+        help="Most ready PRs in one fresh batch; auto sizes it from the recent share of red PRs",
     )
     parser.epilog = "Then an action: ready N..., drain [--no-wait], tick [--label L], withdraw N HEAD, report N"
     return parser
@@ -1052,6 +1067,7 @@ def main():
             branch=known.branch,
             context=known.context,
             original_prs_only=known.original_prs_only,
+            max_batch=known.max_batch,
         )
         return 0
     args = p.parse_args()
