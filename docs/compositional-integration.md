@@ -173,6 +173,28 @@ or real Git landings.
 - **Overload, further.** Retries of refused changes, flaky units and several
   schedulers contending for the landing compare-and-swap are not modelled
   yet.
-- **Release bridges.** Promote one immutable main snapshot through
-  Lab → Early Release → Production, each stage with its own evidence. A
-  failure downstream holds that promotion only, never main integration.
+- **Release bridges on real deploys.** `promotion.py` models the bridges
+  (see below), but nothing yet connects a stage to a deploy, a tag or a
+  check run.
+
+## Release bridges
+
+`concurrent_merge/promotion.py` keeps releases apart from integration. Each
+stage (for example Lab → Early Release → Production) points at one snapshot
+of main and moves only by promotion from the stage before it.
+
+- **One artifact.** A snapshot is promoted as it is, never rebuilt, and each
+  promotion records its source, the checks it passed and who approved it.
+- **Evidence per stage, per snapshot.** A stage lists the checks it needs. A
+  check counts only for the snapshot it ran on, and only at its own stage. A
+  stage can require a person's approval of each snapshot.
+- **A failure holds one bridge.** A failed check holds that snapshot at that
+  stage. Main keeps integrating, earlier stages keep promoting newer
+  snapshots, and later stages keep what they have.
+- **Compare-and-swap and rollback.** `promote` and `rollback` take the
+  snapshot the caller saw at the stage and change nothing if it moved.
+  Rollback returns the stage to the snapshot it held before. The rolled-back
+  snapshot can't move on to the next stage unless it is promoted into this
+  stage again.
+
+`tests/test_promotion.py` checks each rule.
