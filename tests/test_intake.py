@@ -525,3 +525,82 @@ class IntakeTests(unittest.TestCase):
 
         rows = attempts([run(3, 2), run(1, 1), run(9, 5)], [1, 2], 3)
         self.assertEqual(sum(r["attempts"] for r in rows), 3)
+
+
+class BatcherTests(unittest.TestCase):
+    def test_tick_pins_labelled_prs_and_drains_without_waiting(self):
+        intake = Intake("owner/repo", "main", "trusted", Mock())
+        rows = [{"number": 4, "pull_request": {}}, {"number": 5}, {"number": 7, "pull_request": {}}]
+        with (
+            patch("concurrent_merge.intake.github.rest_pages", return_value=iter(rows)) as pages,
+            patch.object(intake, "register") as register,
+            patch.object(intake, "drain") as drain,
+        ):
+            intake.tick("lit-ready")
+        self.assertEqual(pages.call_args.args[0], "repos/owner/repo/issues")
+        self.assertEqual(pages.call_args.args[1]["labels"], "lit-ready")
+        register.assert_called_once_with([4, 7])  # #5 is an issue, not a PR
+        drain.assert_called_once_with(wait=False)
+
+    def test_tick_still_resumes_the_intake_when_nothing_new_is_ready(self):
+        intake = Intake("owner/repo", "main", "trusted", Mock())
+        with (
+            patch("concurrent_merge.intake.github.rest_pages", return_value=iter([{"number": 4, "pull_request": {}}])),
+            patch.object(intake, "register", side_effect=Ineligible("None ready")),
+            patch.object(intake, "drain") as drain,
+        ):
+            intake.tick("lit-ready")
+        drain.assert_called_once_with(wait=False)
+
+    def test_drain_without_waiting_returns_while_a_batch_is_checked(self):
+        intake = Intake("owner/repo", "main", "trusted", Mock())
+        refs = {intake.target: "a" * 40, intake.active: "b" * 40}
+        with (
+            patch.object(intake, "refs", return_value=refs),
+            patch.object(intake, "state", return_value={"tip": "c" * 40}),
+            patch.object(intake, "advance", return_value=False) as advance,
+            patch("concurrent_merge.intake.time.sleep") as sleep,
+        ):
+            intake.drain(wait=False)
+        advance.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_drain_without_waiting_returns_while_originals_are_queued(self):
+        intake = Intake("owner/repo", "main", "trusted", Mock(), original_prs_only=True)
+        refs = {intake.target: "a" * 40, intake.active: "b" * 40}
+        with (
+            patch.object(intake, "refs", return_value=refs),
+            patch.object(intake, "state", return_value={"originals": [[1, "c" * 40, "t"]]}),
+            patch.object(intake, "drain_originals", return_value="waiting") as originals,
+            patch("concurrent_merge.intake.time.sleep") as sleep,
+        ):
+            intake.drain(wait=False)
+        originals.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_waiting_drain_still_sleeps_and_retries(self):
+        intake = Intake("owner/repo", "main", "trusted", Mock())
+        refs = {intake.target: "a" * 40, intake.active: "b" * 40}
+        with (
+            patch.object(intake, "refs", return_value=refs),
+            patch.object(intake, "state", side_effect=[{"tip": "c" * 40}, {}]),
+            patch.object(intake, "advance", return_value=False),
+            patch.object(intake, "assemble", return_value=None),
+            patch("concurrent_merge.intake.time.sleep") as sleep,
+        ):
+            intake.drain()
+        sleep.assert_called_once_with(30)
+
+
+class IntakeCommandTests(unittest.TestCase):
+    def test_cli_hands_the_intake_its_own_options_and_action(self):
+        from concurrent_merge.cli import main
+
+        argv = ["concurrent-merge", "intake", "owner/repo", "--branch", "dev", "--context", "CI / tests",
+                "--repo-dir", "/tmp/lit", "tick", "--label", "lit-ready"]
+        with patch("sys.argv", argv), patch("concurrent_merge.intake.main") as intake_main:
+            self.assertEqual(main(), 0)
+        intake_main.assert_called_once_with(
+            ["--repo-dir", "/tmp/lit", "tick", "--label", "lit-ready"],
+            repository="owner/repo", branch="dev", context="CI / tests", original_prs_only=False,
+        )

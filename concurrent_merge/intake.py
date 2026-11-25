@@ -405,7 +405,7 @@ class Intake:
             edits = [(pin_ref(n), h, "") for n, h in done if refs.get(pin_ref(n)) == h]
             self.push([*edits, (self.active, lock, updated)])
         else:
-            time.sleep(2)
+            return "waiting"
         return True
 
     def advance(self, refs, lock, record):
@@ -657,10 +657,31 @@ class Intake:
         next_record = dict(record, closing=dict(remove=remove, pending=pending))
         self.push([(self.active, lock, self.record(next_record, lock))])
 
-    def drain(self):
+    def labelled(self, label):
+        """Open PRs into this branch carrying the label, oldest first: the batcher's readiness signal."""
+        rows = github.rest_pages(
+            f"repos/{self.repository}/issues",
+            dict(state="open", labels=label, sort="created", direction="asc"),
+        )
+        return [row["number"] for row in rows if "pull_request" in row]
+
+    def tick(self, label):
+        """One pass of the batcher: pin every ready labelled PR, then move the intake as far as
+        it can go without waiting. A scheduler (cron, a CI trigger) calls this again later."""
+        numbers = self.labelled(label)
+        if numbers:
+            try:
+                self.register(numbers)
+            except Ineligible as reason:
+                print(f"Nothing new to pin: {reason}", flush=True)
+        else:
+            print(f"No open PRs carry the {label!r} label.", flush=True)
+        self.drain(wait=False)
+
+    def drain(self, wait=True):
         for attempt in range(4):
             try:
-                return self._drain()
+                return self._drain(wait)
             except (RuntimeError, subprocess.CalledProcessError, OSError) as error:
                 if attempt == 3:
                     raise
@@ -670,7 +691,8 @@ class Intake:
                 )
                 time.sleep(2**attempt)
 
-    def _drain(self):
+    def _drain(self, wait=True):
+        # With wait=False this returns where it would sleep; the next call resumes from the refs.
         while True:
             refs = self.refs()
             lock = refs.get(self.active, "")
@@ -686,11 +708,20 @@ class Intake:
             if "originals" in record or (
                 self.original_prs_only and "tip" not in record
             ):
-                if not self.drain_originals(refs, lock, record):
+                moved = self.drain_originals(refs, lock, record)
+                if not moved:
                     return
+                if moved == "waiting":
+                    if not wait:
+                        print("Original PRs are still in GitHub's queue; the next pass resumes.", flush=True)
+                        return
+                    time.sleep(2)
                 continue
             if "tip" in record:
                 if not self.advance(refs, lock, record):
+                    if not wait:
+                        print(f"Batch {record['tip'][:12]} is still being checked; the next pass resumes.", flush=True)
+                        return
                     time.sleep(30)
                 continue
             groups = record.get("remaining", [])
@@ -716,7 +747,17 @@ def main(argv=None, *, repository, branch="main", context, original_prs_only=Fal
         "ready", help="Register ready source revisions and drain the intake"
     )
     ready.add_argument("numbers", nargs="+", type=int)
-    cmd.add_parser("drain", help="Resume admission from the durable Git refs")
+    drain = cmd.add_parser("drain", help="Resume admission from the durable Git refs")
+    drain.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Return instead of sleeping while GitHub checks a batch; call again to resume",
+    )
+    tick = cmd.add_parser(
+        "tick",
+        help="Batcher pass: pin every ready PR carrying --label, then drain without waiting",
+    )
+    tick.add_argument("--label", default="lit-ready")
     withdraw = cmd.add_parser("withdraw", help="Withdraw an exact source request")
     withdraw.add_argument("number", type=int)
     withdraw.add_argument("head")
@@ -774,6 +815,9 @@ def main(argv=None, *, repository, branch="main", context, original_prs_only=Fal
             )
         )
         return
+    if args.action == "tick":
+        api.tick(args.label)
+        return
     if args.action == "ready":
         api.register(args.numbers)
-    api.drain()
+    api.drain(wait=not getattr(args, "no_wait", False))

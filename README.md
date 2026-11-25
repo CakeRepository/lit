@@ -117,6 +117,41 @@ concurrent-merge land batch-state/runs/BATCH/result.json --repo batch.git
 
 `land` checks the retained tested ref, verifies ancestry, rereads queue membership and exact PR heads, and uses a lease on the original target SHA for one push. GitHub applies the repository's branch rules. The lease atomically guards the target ref. Use `propose` when a repository requires GitHub's own merge-queue transaction.
 
+## Batch ahead of GitHub's merge queue
+
+GitHub's merge queue tests a few groups at a time, so a repository that agents commit to all day lands far fewer PRs per hour than it receives. The batcher puts every ready PR into one batch PR, so one pass of the queue lands all of them.
+
+A PR is ready when it carries the label (default `lit-ready`), comes from a branch in the same repository, passes the required check on its current head, and has no unresolved review threads. Only people with triage access can add a label, and a PR from a fork is never batched. Each pass pins ready heads under `refs/heads/lit/ready/N`, builds one batch PR, enqueues it, and on a failure splits the batch to find the PR that broke it. All state lives in refs under `refs/heads/lit/`, so a pass that stops anywhere is resumed by the next one.
+
+```sh
+concurrent-merge intake OWNER/REPO --context "CI / tests" tick --label lit-ready
+```
+
+`tick` never sleeps: it returns while GitHub checks a batch, and the next call carries on. Run it on a schedule and when the required check finishes. The `actions/batcher` action does this in a GitHub workflow:
+
+```yaml
+on:
+  schedule: [{cron: "*/5 * * * *"}]
+  workflow_run: {workflows: ["CI"], types: [completed]}
+  workflow_dispatch:
+concurrency: {group: lit-batcher, cancel-in-progress: false}
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3  # pin a commit SHA
+        with:
+          client-id: ${{ secrets.LIT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LIT_APP_PRIVATE_KEY }}
+      - uses: CakeRepository/lit/actions/batcher@main  # pin a commit SHA
+        with:
+          token: ${{ steps.app.outputs.token }}
+          context: CI / tests
+```
+
+Use a GitHub App token: branches and PRs created with the workflow's own `GITHUB_TOKEN` start no checks. The App needs read and write access to contents, pull requests and workflows, and read access to actions, checks and commit statuses. The other intake actions are `ready N...` to pin named PRs, `drain [--no-wait]` to resume, `withdraw N HEAD` to take a pin back, and `report N` to count the workflow runs a landed batch used.
+
 ## Record what a test job consumed
 
 `trace` runs one job under `strace` in a fresh detached checkout and writes a footprint. Every path the job opened, executed, inspected or listed before it wrote that path counts as an input. Checkout inputs are recorded as the traced commit's Git entries: file modes and blob IDs, directory listings, and paths the job looked for and did not find. Files read outside the checkout are hashed, and environment variables are recorded as hashes. Reads of the checkout's own `.git` mark the job as revision-specific, and network connections are listed.
