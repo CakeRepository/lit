@@ -98,6 +98,8 @@ For a GitHub target that accepts an aggregate PR as its unit of review, submit t
 concurrent-merge propose batch-state/runs/BATCH/result.json --repo batch.git --head lit/batch-example
 ```
 
+A batch collected with `--prs`, `--label` or `--min-reviews` has no merge queue to recheck, so `propose` rechecks the same rules instead, as `land` does, and the draft PR says it is for review rather than for the merge queue. Like `collect`, `propose` falls back to the REST API to find and open its PR when GitHub GraphQL is refused.
+
 Before opening a new PR, lit looks for a native GitHub merge group with the exact tested tree, current base, and every tested source head in its history. A match returns the existing group for tracking and saves the duplicate submission. GitHub still owns the result of that group's checks.
 
 `run` prints a receipt path and leaves the target alone. A partial batch returns exit 1 and records its passing subset. To publish that subset explicitly, use the receipt from the operator's trusted state directory.

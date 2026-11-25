@@ -1,8 +1,10 @@
 """Submit a tested batch for review through a protected GitHub branch."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 from .engine import Repo, parse_merge
@@ -41,6 +43,13 @@ def matching_group(repo, receipt, live):
 
 
 def proposal_members(repo, receipt, tested_ref, live):
+    # A snapshot collected by --prs, --label or --min-reviews has no merge queue:
+    # a member must still match those rules instead of still being queued.
+    left = (
+        "no longer matches the collected selection"
+        if receipt["snapshot"].get("selection")
+        else "left the merge queue"
+    )
     snapshot = receipt["snapshot"]
     base, final = snapshot["base"], receipt["final"]
     tested = set(receipt["tested"])
@@ -78,10 +87,85 @@ def proposal_members(repo, receipt, tested_ref, live):
         ):
             included.append(number)
         else:
-            raise ValueError(f"PR #{number} left the merge queue; recollect and test")
+            raise ValueError(f"PR #{number} {left}; recollect and test")
     if not remaining or tree == repo.out("rev-parse", target + "^{tree}"):
         raise ValueError("The target already contains the batch")
     return remaining, included, tree
+
+
+def graphql_allowed():
+    api = os.environ.get("LIT_GITHUB_API", "auto")
+    if api not in ("auto", "graphql", "rest"):
+        raise ValueError("LIT_GITHUB_API must be auto, graphql or rest")
+    return api
+
+
+def prior_pulls(repository, branch, head):
+    """Earlier PRs from this topic branch, as `gh pr list --json` reports them."""
+    api = graphql_allowed()
+    if api != "rest":
+        try:
+            return json.loads(
+                subprocess.check_output(
+                    [
+                        "gh", "pr", "list", "--repo", repository, "--base", branch,
+                        "--head", head, "--state", "all",
+                        "--json", "state,headRefOid,isCrossRepository,url",
+                    ]
+                )
+            )
+        except subprocess.CalledProcessError:
+            if api == "graphql":
+                raise
+            print("lit: GitHub GraphQL refused; reading PRs over REST", file=sys.stderr)
+    owner = repository.split("/")[0]
+    rows = json.loads(
+        subprocess.check_output(
+            [
+                "gh", "api", "-X", "GET", f"repos/{repository}/pulls",
+                "-f", f"head={owner}:{head}", "-f", f"base={branch}",
+                "-f", "state=all", "-f", "per_page=100",
+            ]
+        )
+    )
+    return [
+        dict(
+            state="MERGED" if p.get("merged_at") else p["state"].upper(),
+            headRefOid=p["head"]["sha"],
+            isCrossRepository=((p["head"].get("repo") or {}).get("full_name") != repository),
+            url=p["html_url"],
+        )
+        for p in rows
+        if p["head"]["ref"] == head
+    ]
+
+
+def create_draft(repository, branch, head, title, body_path):
+    api = graphql_allowed()
+    if api != "rest":
+        try:
+            return subprocess.check_output(
+                [
+                    "gh", "pr", "create", "--repo", repository, "--base", branch,
+                    "--head", head, "--draft", "--title", title,
+                    "--body-file", str(body_path),
+                ],
+                text=True,
+            ).strip()
+        except subprocess.CalledProcessError:
+            if api == "graphql":
+                raise
+            print("lit: GitHub GraphQL refused; opening the PR over REST", file=sys.stderr)
+    created = json.loads(
+        subprocess.check_output(
+            [
+                "gh", "api", "-X", "POST", f"repos/{repository}/pulls",
+                "-f", f"title={title}", "-f", f"head={head}", "-f", f"base={branch}",
+                "-F", "draft=true", "-F", f"body=@{body_path}",
+            ]
+        )
+    )
+    return created["html_url"]
 
 
 def propose(args, read_queue):
@@ -93,7 +177,12 @@ def propose(args, read_queue):
     repo.run("check-ref-format", "--branch", head)
     if head == branch or head.startswith(("refs/", "gh-readonly-queue/")):
         raise ValueError("Choose a new topic branch for the batch PR")
-    live = read_queue(repository, branch)
+    selection = snapshot.get("selection")
+    if selection:
+        # Collected without a merge queue: recheck the same rules, as land does.
+        live = read_queue(repository, branch, selection)
+    else:
+        live = read_queue(repository, branch)
     destination = "https://github.com/" + repository + ".git"
     if live["base"] != snapshot["base"]:
         repo.run("fetch", "--no-tags", destination, "refs/heads/" + branch)
@@ -105,25 +194,7 @@ def propose(args, read_queue):
     remote = repo.out("ls-remote", "--heads", destination, ref)
     if remote and remote.split()[0] != final:
         raise ValueError("That topic branch exists at another revision")
-    gh = ["gh", "pr"]
-    prior = json.loads(
-        subprocess.check_output(
-            [
-                *gh,
-                "list",
-                "--repo",
-                repository,
-                "--base",
-                branch,
-                "--head",
-                head,
-                "--state",
-                "all",
-                "--json",
-                "state,headRefOid,isCrossRepository,url",
-            ]
-        )
-    )
+    prior = prior_pulls(repository, branch, head)
     previous = [p for p in prior if not p["isCrossRepository"]]
     if previous:
         for p in previous:
@@ -137,7 +208,10 @@ def propose(args, read_queue):
         )
         return
     numbers = ", ".join(f"#{n}" for n in remaining)
-    body = f"lit combined {numbers} for review and validation through the protected merge queue. Each source PR head is a parent in the candidate history.\n\nLocal validation passed on commit `{final}` and tree `{tree}`.\n"
+    route = "for review"
+    if not selection:
+        route += " and validation through the protected merge queue"
+    body = f"lit combined {numbers} {route}. Each source PR head is a parent in the candidate history.\n\nLocal validation passed on commit `{final}` and tree `{tree}`.\n"
     if included:
         body += (
             "\nThe target already contains "
@@ -158,22 +232,7 @@ def propose(args, read_queue):
                 destination,
                 final + ":" + ref,
             )
-        url = subprocess.check_output(
-            [
-                *gh,
-                "create",
-                "--repo",
-                repository,
-                "--base",
-                branch,
-                "--head",
-                head,
-                "--draft",
-                "--title",
-                args.title or f"lit batch for {numbers}",
-                "--body-file",
-                str(path),
-            ],
-            text=True,
-        ).strip()
+        url = create_draft(
+            repository, branch, head, args.title or f"lit batch for {numbers}", path
+        )
     print(url)
