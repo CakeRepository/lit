@@ -47,9 +47,10 @@ Each certificate is only as good as these.
    Lit's tracer marks a run incomplete when it can't see all reads (for
    example `io_uring`); such a run must not become a certificate.
 3. **Same environment.** The runner, toolchain and anything else outside the
-   recorded inputs are the same. A change of environment invalidates every
-   certificate taken in the old one; the in-memory model does not track
-   this yet.
+   recorded inputs are the same. Certificates from the unit store list their
+   runner inputs (step 2 of the plan below), so a change to what was
+   recorded invalidates them. Anything about the runner the record did not
+   name (an ignored variable, the kernel, a device) is still assumed.
 4. **New tests have no certificate.** A unit that has never passed proves
    nothing, so it is unproven wherever it is read.
 
@@ -170,8 +171,6 @@ or real Git landings.
   lands. What is open is feeding Frontier's certificates and components into
   `collect`, `run` and `land`, without weakening required checks or
   approvals.
-- **Environment in certificates.** Bind certificates to the environment that
-  ran them (assumption 3).
 - **Overload, further.** Retries of refused changes, flaky units and several
   schedulers contending for the landing compare-and-swap are not modelled
   yet.
@@ -204,11 +203,22 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    know (a new test, an untraced job) is invisible, and listings and absent
    paths a unit probed are not inputs yet. `needs` is a lower bound until
    the comparison shows otherwise.
-2. **Certificates carry their environment.** Add a digest of the runner
-   image and toolchain to each certificate, and treat a mismatch as
-   unproven (assumption 3).
-   *Tests:* the same inputs in another environment prove nothing.
-   *Limits:* the digest only covers what is named in it.
+2. **Certificates carry their environment** (done). `frontier.from_store`
+   adds runner inputs to each certificate, keyed by absolute paths, which no
+   repository path can be. The environment the run saw is one input: the
+   digest of every variable the record did not ignore, so adding, removing or
+   changing one invalidates the certificate, as the unit store's own reuse
+   check does. Each file outside the checkout the unit read (the toolchain)
+   is one input per path, so a new compiler invalidates only the units that
+   read it. No change writes a runner input. `frontier.runner_inputs` gives
+   main's value, what the runner holds now, and the shadow decision uses it.
+   *Tests:* `RunnerTests` in `tests/test_frontier.py` and the environment
+   test in `tests/test_shadow.py`: the same inputs in another environment,
+   or with a changed host file, prove nothing, and an ignored variable or an
+   unread host file doesn't matter.
+   *Limits:* the digest only covers what the record names. Machine-local
+   files (`/etc/hosts` and the like) are left out, as the unit store's check
+   leaves them out.
 3. **Certificates from each PR's own CI.** Accept a PR run's footprints as
    certificates on main-at-that-time plus the change, and only when signed
    (see "Signed results from other machines" in the README).

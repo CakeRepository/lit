@@ -18,11 +18,16 @@ no certificate holds and every unit reading it counts as unproven. A path that
 no stored unit read is still recorded as one input, so two PRs editing it are
 reported as a write-write conflict.
 
+The runner counts as well (see frontier.py): a certificate holds only while
+the environment its run saw and the host files it read are what this runner
+holds now. A stored unit whose runner inputs differ is reported as stale.
+
 What the shadow cannot see, and so never claims:
 - units the store has no passing footprint for (a new test, an untraced job);
 - paths a unit listed or probed but did not read (directory listings, absent
   files);
-- anything outside the recorded inputs (assumption 3: the environment).
+- anything about the runner that the record did not name (an ignored
+  environment variable, a device, the kernel).
 So `needs` here is a lower bound on what a decision would have to run, and the
 comparison with the real run is how the gap gets measured.
 """
@@ -31,7 +36,7 @@ import os
 from pathlib import PurePosixPath
 
 from . import js_symbols
-from .frontier import from_store
+from .frontier import from_store, runner_inputs
 from .symbols import digests
 
 UNREADABLE = "unreadable:"  # prefix of a digest no certificate holds
@@ -83,11 +88,21 @@ def by_file(keys):
     return out
 
 
-def program(repo, store, job, base, contents=None):
-    """Frontier's map from the store, with main set to `base`'s real content."""
+def program(repo, store, job, base, contents=None, env=None):
+    """Frontier's map from the store, with main set to `base`'s real content on this runner.
+
+    Runner inputs (the environment, files outside the checkout) take the values this
+    runner holds now, or those of `env` for the environment, so a certificate recorded
+    in another environment proves nothing.
+    """
     contents = contents or Contents(repo)
     f = from_store(store, job)
-    f.base = {k: d for k in f.readers if (d := contents.digest(base, k)) is not None}
+    runner = runner_inputs(f.readers, env)
+    f.base = {}
+    for key in f.readers:
+        digest = runner[key] if key in runner else contents.digest(base, key)
+        if digest is not None:
+            f.base[key] = digest
     return f
 
 
@@ -131,11 +146,11 @@ def decide(f, changes):
     )
 
 
-def shadow(repo, snapshot, store, job, receipt=None, attempts=None):
+def shadow(repo, snapshot, store, job, receipt=None, attempts=None, env=None):
     """The shadow decision for one snapshot; with a run's receipt, what actually passed too."""
     contents = Contents(repo)
     base = snapshot["base"]
-    f = program(repo, store, job, base, contents)
+    f = program(repo, store, job, base, contents, env)
     files = by_file(f.readers)
     changes = {p["number"]: writes(repo, contents, files, base, p["head"]) for p in snapshot["changes"]}
     out = dict(
