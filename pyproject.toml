@@ -16,4 +16,4 @@ concurrent-merge = "concurrent_merge.cli:main"
 
 [tool.lit_build]
 package = "concurrent_merge"
-package-data = ["ps_nodes.ps1", "ts_decls.mjs", "dotnet/*.cs", "dotnet/*.csproj"]
+package-data = ["ps_nodes.ps1", "dotnet/*.cs", "dotnet/*.csproj"]

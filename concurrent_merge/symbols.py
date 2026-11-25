@@ -2,16 +2,18 @@
 
 A test that reads a large shared module (a db.ts that hundreds of tests import)
 usually runs only a few of its functions. For files recorded with symbols, lit
-keeps per file version a digest of each function's own code (ts_decls.mjs: the
-code of the functions inside it is cut out, as are comments and type-only
-declarations; the file's top-level code is the symbol ""), and per test the
-functions that ran (from the test's own line coverage).
+keeps per file version a digest of each function's own code (js_symbols.py, on
+lit's own JavaScript and TypeScript tokenizer: the code of the functions inside
+a function is cut out where its extent is certain, as are comments; the file's
+top-level code is the symbol ""), and per test the functions that ran (from the
+test's own line coverage).
 
 A later version of the file still lets the test be skipped when no symbol that
 ran in the test (the file's top-level code always counts as run) changed or
 was removed. Added functions never block a skip: an unchanged test can only
-reach new code through code that did change. A file that cannot be parsed, or
-that has no coverage for the test, falls back to the whole-file rule.
+reach new code through code that did change. A file that cannot be read with
+certainty, or that has no coverage for the test, falls back to the whole-file
+rule.
 
 Imports are kept apart from the top-level code. A changed import still lets the
 test be skipped when no local name whose binding changed appears in the code of
@@ -23,12 +25,10 @@ with its imports, as they always did.
 """
 
 from fnmatch import fnmatchcase
-import json
 from pathlib import Path
-import shutil
-import subprocess
 
-SCRIPT = Path(__file__).with_name("ts_decls.mjs")
+from . import js_symbols
+
 SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
 IMPORTS = " imports"  # no symbol name holds a space
 
@@ -37,28 +37,20 @@ def wanted(path, patterns):
     return path.endswith(SUFFIXES) and any(fnmatchcase(path, p) for p in patterns)
 
 
-def runtime():
-    return shutil.which("bun") or shutil.which("node")
-
-
 def declarations(workdir, paths):
-    """{repo path: table or None} for files under workdir, parsed in one process."""
-    paths = sorted(set(paths))
-    tool = runtime()
-    if not paths or not tool:
-        return {p: None for p in paths}
+    """{repo path: table or None} for files under workdir, read in this process.
+
+    A file that cannot be read, or that the reader is not sure about, is None.
+    """
     out = {}
-    for start in range(0, len(paths), 400):
-        chunk = paths[start:start + 400]
+    for path in sorted(set(paths)):
         try:
-            done = subprocess.run(
-                [tool, str(SCRIPT), *chunk], cwd=workdir, capture_output=True,
-                text=True, timeout=600,
-            )
-            out.update(json.loads(done.stdout) if done.returncode == 0 else {})
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            pass
-    return {p: out.get(p) for p in paths}
+            blob = (Path(workdir) / path).read_bytes()
+        except OSError:
+            out[path] = None
+            continue
+        out[path] = js_symbols.table(blob, Path(path).suffix.lower())
+    return out
 
 
 def lcov_hits(text, root):
@@ -100,17 +92,27 @@ def _normal(path):
 def executed(table, hits):
     """Names of the table's symbols that ran, given {line: hits} for that file.
 
-    A function ran when a line strictly inside it ran; one with no instrumented
-    line inside counts as run when any of its lines ran (conservative for
-    one-line arrow functions, whose line runs when they are created). The file's
-    top-level code always counts as run.
+    A function ran when one of its own lines strictly inside it ran (lines
+    inside a function nested in it belong to that one). One with no such
+    instrumented line counts as run when any of its lines ran: conservative
+    for one-line arrow functions, whose line runs when they are created, and
+    for a function whose own code shares its first line with a callback. The
+    file's top-level code always counts as run.
     """
+    symbols = table["symbols"]
     ran = [""]
-    for name, f in table["symbols"].items():
+    for name, f in symbols.items():
         if name == "":
             continue
-        inner = [hits[n] for n in range(f["start"] + 1, f["end"]) if n in hits]
-        if any(inner) if inner else any(hits.get(n, 0) for n in range(f["start"], f["end"] + 1)):
+        nested = [
+            (c["start"], c["end"]) for n, c in symbols.items()
+            if n.startswith(name + "/") and "/" not in n[len(name) + 1:]
+        ]
+        own = [
+            hits[n] for n in range(f["start"] + 1, f["end"])
+            if n in hits and not any(a <= n <= b for a, b in nested)
+        ]
+        if any(own) if own else any(hits.get(n, 0) for n in range(f["start"], f["end"] + 1)):
             ran.append(name)
     return sorted(ran)
 

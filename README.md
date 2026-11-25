@@ -19,7 +19,7 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## Run a batch
 
-Use Python 3.12 or later and Git 2.48 or later. Collecting, testing, merging and landing need nothing else installed: lit is written with the Python standard library and plain Git, and talks to GitHub through its own small client. That client uses the token in `GH_TOKEN` or `GITHUB_TOKEN`, or else asks Git's credential helper for the GitHub host (`GITHUB_API_URL` points it at GitHub Enterprise). A few optional features still call outside tools when they are present: footprint tracing runs the job under Linux `strace`, per-function selection for JavaScript and TypeScript parses with `@babel/parser` under Bun or Node, and the .NET program map builds with the `dotnet` SDK.
+Use Python 3.12 or later and Git 2.48 or later. Collecting, testing, merging and landing need nothing else installed: lit is written with the Python standard library and plain Git, and talks to GitHub through its own small client. That client uses the token in `GH_TOKEN` or `GITHUB_TOKEN`, or else asks Git's credential helper for the GitHub host (`GITHUB_API_URL` points it at GitHub Enterprise). A few optional features still call outside tools when they are present: footprint tracing runs the job under Linux `strace`, and the .NET program map builds with the `dotnet` SDK. Per-function selection for JavaScript and TypeScript (`--symbols`) reads those files with lit's own tokenizer, so it needs no parser; it still relies on Bun to run your tests and write the `lcov` coverage report that says which functions ran (put `{lcov}` where `bun test` takes its coverage arguments).
 
 ```sh
 python -m pip install .
