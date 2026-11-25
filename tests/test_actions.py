@@ -24,6 +24,16 @@ class ActionTests(unittest.TestCase):
                 if "concurrent_merge.cli" in line:
                     self.assertIn("python3 -B ", line, f.parent.name)
 
+    def test_actions_source_the_runner_guard_before_running_lit(self):
+        # The guard also covers Python that lit starts and files lit leaves anywhere in its own folders.
+        for f in sorted(ACTIONS.glob("*/action.yml")):
+            text = f.read_text()
+            if "concurrent_merge.cli" not in text:
+                continue
+            guard = text.find('source "$GITHUB_ACTION_PATH/../lib/guard.sh"')
+            self.assertNotEqual(guard, -1, f.parent.name)
+            self.assertLess(guard, text.find("concurrent_merge.cli"), f.parent.name)
+
 
 if __name__ == "__main__":
     unittest.main()
