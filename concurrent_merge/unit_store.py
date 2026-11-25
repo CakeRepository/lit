@@ -98,7 +98,7 @@ def discover_units(entries, patterns, strip):
 
 
 def plan(directory, names, commit, entries, workdir, *, allow_network, listings, env, scratch=(),
-         host=True):
+         host=True, ignore_env=()):
     listed = Listings(entries)
     decisions, kept, loaded = {}, {}, {}
     for name in names:
@@ -111,7 +111,7 @@ def plan(directory, names, commit, entries, workdir, *, allow_network, listings,
             allow_network=allow_network, workdir=workdir, listed=listed,
             listings=listings,
         )
-        reasons += environment_changes(bundle, env)
+        reasons += environment_changes(bundle, env, ignore_env)
         if sorted(bundle.get("scratch") or ()) != sorted(scratch):
             reasons.append(dict(kind="scratch", before=bundle.get("scratch") or [], now=sorted(scratch)))
         kept[name] = {
@@ -170,6 +170,18 @@ def shard_of(names, weights, shard, shards, pinned=()):
         if target == shard:
             mine.append(name)
     return sorted(mine)
+
+
+def starved(decisions, floor=10):
+    """True when most files have records yet none can be reused: a sign that
+    something every record shares, such as an environment variable, changed,
+    and the run quietly fell back to running everything."""
+    if len(decisions) < floor or any(d["reuse"] for d in decisions.values()):
+        return False
+    recorded = sum(
+        1 for d in decisions.values() if not any(r["kind"] == "new" for r in d["reasons"])
+    )
+    return recorded * 2 >= len(decisions)
 
 
 def cached_units(
@@ -245,7 +257,7 @@ def cached_units(
     decisions = plan(
         directory, names, commit, entries, workdir,
         allow_network=allow_network, listings=listings, env=env,
-        scratch=keep_empty, host=host,
+        scratch=keep_empty, host=host, ignore_env=ignore_env,
     )
     for other in proofs:
         waiting = [n for n in names if not decisions[n]["reuse"]]
@@ -254,7 +266,7 @@ def cached_units(
         found = plan(
             job_dir(other, job), waiting, commit, entries, workdir,
             allow_network=allow_network, listings=listings, env=env,
-            scratch=keep_empty, host=host,
+            scratch=keep_empty, host=host, ignore_env=ignore_env,
         )
         for n in waiting:
             if found[n]["reuse"]:
@@ -343,6 +355,7 @@ def cached_units(
             1 for d in decisions.values() if d["reuse"] and d.get("unchanged_functions")
         ),
         reusable_by_proof=sum(1 for d in decisions.values() if d["reuse"] and d.get("proof")),
+        starved=starved(decisions),
         exit_code=1 if failed else 0,
     )
     # What each failing file read, so blame.py can name the change it saw.

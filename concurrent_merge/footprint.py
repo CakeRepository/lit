@@ -734,12 +734,19 @@ def listing_matters(manifest, path, listed):
     return any(name in keys or resolution_key(name) in keys for name in changed)
 
 
-def environment_changes(manifest, env):
-    current = environment(env, manifest["ignored_environment"])
+def environment_changes(manifest, env, ignore=()):
+    """Variables whose value differs from the record. A variable either side
+    ignores does not count: a record written before a variable was declared
+    run-specific still holds it, and must not fail every check after."""
+    current = environment(env, [*manifest["ignored_environment"], *ignore])
+    recorded = {
+        name: digest for name, digest in manifest["environment"].items()
+        if not any(fnmatchcase(name, pattern) for pattern in ignore)
+    }
     return [
         dict(kind="environment", name=name)
-        for name in sorted(set(current) | set(manifest["environment"]))
-        if current.get(name) != manifest["environment"].get(name)
+        for name in sorted(set(current) | set(recorded))
+        if current.get(name) != recorded.get(name)
     ]
 
 
