@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import unittest
 import urllib.error
 import zipfile
@@ -91,9 +92,13 @@ class RequestTests(Env):
         self.assertEqual(github.build_url("a/b?x=1", dict(y=2)), "https://api.github.com/a/b?x=1&y=2")
 
     def test_enterprise_urls(self):
+        # GitHub Actions sets GITHUB_GRAPHQL_URL for every job, so clear it here.
         with patch.dict("os.environ", dict(GITHUB_API_URL="https://ghe.example/api/v3/")):
+            os.environ.pop("GITHUB_GRAPHQL_URL", None)
             self.assertEqual(github.build_url("user"), "https://ghe.example/api/v3/user")
             self.assertEqual(github.graphql_url(), "https://ghe.example/api/v3/graphql")
+            os.environ["GITHUB_GRAPHQL_URL"] = "https://ghe.example/api/graphql"
+            self.assertEqual(github.graphql_url(), "https://ghe.example/api/graphql")
 
     def test_graphql_returns_the_response(self):
         with patch("urllib.request.urlopen", lambda r, timeout=None: reply(dict(data=dict(a=1)))):
