@@ -379,8 +379,26 @@ def test_snapshot(args):
         receipt,
         dict(snapshot=snapshot, final=final, tested=sorted(passed), command=args.test),
     )
+    if args.shadow_store:
+        write_shadow(repo, snapshot, args.shadow_store, args.shadow_job, directory)
     print(receipt.resolve())
     return 0 if len(passed) == len(changes) else 1
+
+
+def write_shadow(repo, snapshot, store, job, directory):
+    """Record beside a run what Frontier would have decided. Never changes the run's outcome."""
+    from .shadow import shadow
+
+    try:
+        result = shadow(
+            repo, snapshot, store, job,
+            receipt=json.loads((directory / "result.json").read_text(encoding="utf8")),
+            attempts=json.loads((directory / "attempts.json").read_text(encoding="utf8")),
+        )
+    except Exception as exc:  # the shadow is advisory: report it, keep the run as it was
+        result = dict(kind="lit-shadow-decision", error=f"{type(exc).__name__}: {exc}")
+        print(f"lit: shadow decision failed: {exc}", file=sys.stderr)
+    write_json(directory / "shadow.json", result)
 
 
 def record_footprint(args):
@@ -752,6 +770,13 @@ def main():
         type=int,
         help="Concurrent Git and structural comparison workers on this runner (default: up to 8)",
     )
+    run.add_argument(
+        "--shadow-store",
+        type=Path,
+        help="Also write shadow.json: what Frontier would have decided from this unit store "
+        "(advisory, changes nothing)",
+    )
+    run.add_argument("--shadow-job", help="The store's job for --shadow-store")
     run.add_argument("--test", nargs=argparse.REMAINDER, required=True)
     agree = cmds.add_parser(
         "agree", help="Record one participant's vote for exact replacement file bytes"
@@ -971,6 +996,18 @@ def main():
     )
     cache_report.add_argument("--store", type=Path, required=True)
     cache_report.add_argument("--job")
+    shadow_cmd = cmds.add_parser(
+        "shadow",
+        help="Say what Frontier would decide for a snapshot from a unit store, without running anything",
+    )
+    shadow_cmd.add_argument("snapshot", type=Path)
+    shadow_cmd.add_argument("--repo", type=Path, required=True)
+    shadow_cmd.add_argument("--store", type=Path, required=True)
+    shadow_cmd.add_argument("--job", required=True)
+    shadow_cmd.add_argument(
+        "--result", type=Path, help="A run's result.json, to compare with what actually passed"
+    )
+    shadow_cmd.add_argument("--out", type=Path)
     publish = cmds.add_parser(
         "land", help="Push a locally tested result to its original GitHub target"
     )
@@ -1056,7 +1093,25 @@ def main():
             write_json(args.out, evidence)
             print(json.dumps(evidence["prediction"], indent=2))
         elif args.action == "run":
+            if args.shadow_store and not args.shadow_job:
+                raise ValueError("--shadow-store needs --shadow-job")
             return test_snapshot(args)
+        elif args.action == "shadow":
+            from .shadow import shadow
+
+            receipt = attempts = None
+            if args.result:
+                receipt = json.loads(args.result.read_text(encoding="utf8"))
+                history = args.result.parent / "attempts.json"
+                attempts = json.loads(history.read_text(encoding="utf8")) if history.exists() else None
+            snapshot = json.loads(args.snapshot.read_text(encoding="utf8"))
+            if receipt and receipt.get("snapshot") != snapshot:
+                raise ValueError("--result is from another snapshot")
+            result = shadow(Repo(args.repo), snapshot, args.store, args.job, receipt, attempts)
+            if args.out:
+                write_json(args.out, result)
+            print(json.dumps(dict(result["decision"], **({"outcome": result["outcome"]} if receipt else {})),
+                             indent=2))
         elif args.action == "agree":
             Engine(Repo(args.repo), args.state).agree(
                 args.conflict, args.participant, args.file.read_bytes()

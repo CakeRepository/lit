@@ -185,13 +185,25 @@ Each step can land and be reverted on its own, and none weakens required
 checks, approvals or branch protection. Frontier only ever decides what lit
 itself runs. Whatever GitHub requires still runs on the tree that lands.
 
-1. **Shadow decisions.** Build the program map from the unit store
-   (`frontier.from_store`). For each batch `run` tests, record which
+1. **Shadow decisions** (done: `concurrent_merge/shadow.py`). Build the
+   program map from the unit store (`frontier.from_store`), with main set to
+   the batch's real base. For each batch `run` tests, record which
    components and `needs` Frontier would have chosen, next to what ran and
    what passed. Nothing changes behavior.
-   *Tests:* a stored job and a batch give the expected components and needs.
-   *Limits:* only traced jobs have footprints. An untraced job is one unit
-   that reads everything.
+   `concurrent-merge run --shadow-store STORE --shadow-job JOB` writes
+   `shadow.json` beside the run's `result.json`; `concurrent-merge shadow
+   SNAPSHOT --repo R --store STORE --job JOB [--result result.json]` gives
+   the same decision without running anything. A failed shadow is written
+   as an error and never changes the run. The field to watch is
+   `unrun_but_failed`: changes Frontier would have landed without running a
+   unit that the full suite did not pass.
+   *Tests:* `tests/test_shadow.py` builds a store and a repository and checks
+   components, needs, overlaps, function-level reads, stale units, inputs
+   both main and a change edited, conflicts, and the comparison with a run.
+   *Limits:* only traced jobs have footprints, so a unit the store doesn't
+   know (a new test, an untraced job) is invisible, and listings and absent
+   paths a unit probed are not inputs yet. `needs` is a lower bound until
+   the comparison shows otherwise.
 2. **Certificates carry their environment.** Add a digest of the runner
    image and toolchain to each certificate, and treat a mismatch as
    unproven (assumption 3).
