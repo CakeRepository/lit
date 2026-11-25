@@ -219,12 +219,25 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    *Limits:* the digest only covers what the record names. Machine-local
    files (`/etc/hosts` and the like) are left out, as the unit store's check
    leaves them out.
-3. **Certificates from each PR's own CI.** Accept a PR run's footprints as
-   certificates on main-at-that-time plus the change, and only when signed
-   (see "Signed results from other machines" in the README).
-   *Tests:* signed receipts become certificates, and unsigned or mismatched
-   ones are ignored.
+3. **Certificates from each PR's own CI** (done, in the shadow).
+   `frontier.from_store(..., proofs=DIR)` reads a store that `concurrent-merge
+   proof take` filled and adds its records as certificates marked `proof`.
+   Only `take` writes there, and only records an allowed signer signed for
+   this repository, an expected commit and the expected image, with
+   `--quorum` and the audit book if asked (see "Signed results from other
+   machines" in the README). Like any certificate, one proves a unit only
+   where main plus the change agrees with every input it read, the runner
+   inputs included, so a PR's run on its head proves its tests on main plus
+   it exactly when main hasn't moved under what they read. `run
+   --shadow-proofs DIR` and `shadow --proofs DIR` use them, and each
+   component reports `by_proof`, the units only a proof proves.
+   *Tests:* in `tests/test_shadow.py`, a PR's signed record of its own run
+   proves its tests, while one of other content, another environment, or a
+   failed run proves nothing. Signature checks are `proof.py`'s and tested in
+   `tests/test_proof.py`.
    *Limits:* this trusts the signer's runner to have run what it says.
+   Keep `--audit-rate` or the audit book so a share of what proofs cover
+   still reruns.
 4. **Test by component.** In `run`, split the collected PRs into Frontier
    components and test each one's `needs` on its own tested ref, rather than
    one batch for everything. A blocked component no longer holds back the
