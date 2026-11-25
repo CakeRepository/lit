@@ -380,12 +380,13 @@ def test_snapshot(args):
         dict(snapshot=snapshot, final=final, tested=sorted(passed), command=args.test),
     )
     if args.shadow_store:
-        write_shadow(repo, snapshot, args.shadow_store, args.shadow_job, directory, args.shadow_proofs)
+        write_shadow(repo, snapshot, args.shadow_store, args.shadow_job, directory, args.shadow_proofs,
+                     args.shadow_discover, args.shadow_strip)
     print(receipt.resolve())
     return 0 if len(passed) == len(changes) else 1
 
 
-def write_shadow(repo, snapshot, store, job, directory, proofs=None):
+def write_shadow(repo, snapshot, store, job, directory, proofs=None, discover=None, strip=""):
     """Record beside a run what Frontier would have decided. Never changes the run's outcome."""
     from .shadow import shadow
 
@@ -395,6 +396,8 @@ def write_shadow(repo, snapshot, store, job, directory, proofs=None):
             receipt=json.loads((directory / "result.json").read_text(encoding="utf8")),
             attempts=json.loads((directory / "attempts.json").read_text(encoding="utf8")),
             proofs=proofs,
+            discover=discover,
+            strip=strip,
         )
     except Exception as exc:  # the shadow is advisory: report it, keep the run as it was
         result = dict(kind="lit-shadow-decision", error=f"{type(exc).__name__}: {exc}")
@@ -799,6 +802,12 @@ def main():
         help="A store that 'proof take' filled with signed records (each PR's own CI run): "
         "the shadow counts them as certificates too",
     )
+    run.add_argument(
+        "--shadow-discover", action="append", metavar="GLOB",
+        help="Test files as cached-units finds them, for --shadow-store: any without a passing "
+        "footprint is reported",
+    )
+    run.add_argument("--shadow-strip", default="", help="Prefix --shadow-discover removes to name a unit")
     run.add_argument("--test", nargs=argparse.REMAINDER, required=True)
     agree = cmds.add_parser(
         "agree", help="Record one participant's vote for exact replacement file bytes"
@@ -1032,6 +1041,11 @@ def main():
     shadow_cmd.add_argument(
         "--proofs", type=Path, help="A store that 'proof take' filled: signed records count as certificates"
     )
+    shadow_cmd.add_argument(
+        "--discover", action="append", metavar="GLOB",
+        help="Test files as cached-units finds them: any without a passing footprint is reported",
+    )
+    shadow_cmd.add_argument("--strip", default="", help="Prefix to remove from a found path to get its unit name")
     shadow_cmd.add_argument("--out", type=Path)
     publish = cmds.add_parser(
         "land", help="Push a locally tested result to its original GitHub target"
@@ -1134,7 +1148,7 @@ def main():
             if receipt and receipt.get("snapshot") != snapshot:
                 raise ValueError("--result is from another snapshot")
             result = shadow(Repo(args.repo), snapshot, args.store, args.job, receipt, attempts,
-                            proofs=args.proofs)
+                            proofs=args.proofs, discover=args.discover, strip=args.strip)
             if args.out:
                 write_json(args.out, result)
             print(json.dumps(dict(result["decision"], **({"outcome": result["outcome"]} if receipt else {})),

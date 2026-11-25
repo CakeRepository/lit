@@ -214,6 +214,45 @@ class ShadowTests(unittest.TestCase):
         d = shadow(self.repo, self.snapshot({1: one}), self.store, "suite", proofs=proofs)["decision"]
         self.assertEqual(d["components"][0]["needs"], ["tests/test_a.py"])
 
+    def test_a_test_file_a_pr_adds_has_no_footprint_and_must_run(self):
+        docs = self.commit({"README.md": "lit, faster\n", "tests/test_readme.py": "open('README.md')\n"},
+                           self.base, "docs")
+        blind = self.decide({1: docs})["decision"]
+        self.assertEqual(blind["unrun"], [1])  # without the patterns the new file is invisible
+        d = shadow(self.repo, self.snapshot({1: docs}), self.store, "suite",
+                   discover=["tests/test_*"])["decision"]
+        self.assertEqual(d["components"][0]["unrecorded"], ["tests/test_readme.py"])
+        self.assertEqual(d["unrecorded"], [])
+        self.assertEqual(d["unrun"], [])
+
+    def test_a_test_file_on_main_with_no_footprint_leaves_nothing_unrun(self):
+        main = self.commit({"tests/test_c.py": "import c\n"}, self.base, "main")
+        docs = self.commit({"README.md": "lit, faster\n"}, main, "docs")
+        d = shadow(self.repo, self.snapshot({1: docs}, main), self.store, "suite",
+                   discover=["tests/test_*"])["decision"]
+        self.assertEqual(d["unrecorded"], ["tests/test_c.py"])
+        self.assertEqual(d["components"][0]["unrecorded"], [])
+        self.assertEqual(d["components"][0]["needs"], [])
+        self.assertEqual(d["unrun"], [])
+
+    def test_discovered_files_are_named_as_cached_units_names_them(self):
+        store = Path(self.tmp.name) / "stripped"
+        self.record({"test_a.py": (["src/a.py", "tests/test_a.py"], None),
+                     "test_b.py": (["src/b.py", "tests/test_b.py"], None),
+                     "test_db.ts": (["src/db.ts", "tests/test_db.ts"], None)}, store=store)
+        one = self.commit({"src/a.py": "a = 2\n", "tests/test_new.py": "pass\n"}, self.base, "one")
+        path = Path(self.tmp.name) / "queue.json"
+        path.write_text(json.dumps(self.snapshot({1: one})))
+        out = subprocess.run(
+            [sys.executable, "-m", "concurrent_merge", "shadow", str(path), "--repo", str(self.work),
+             "--store", str(store), "--job", "suite", "--discover", "tests/test_*", "--strip", "tests/"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        d = json.loads(out)
+        self.assertEqual(d["unrecorded"], [])
+        self.assertEqual(d["components"][0]["unrecorded"], ["test_new.py"])
+        self.assertEqual(d["components"][0]["needs"], ["test_a.py"])
+
     def test_the_command_prints_the_decision(self):
         one = self.commit({"src/a.py": "a = 2\n"}, self.base, "one")
         path = Path(self.tmp.name) / "queue.json"

@@ -23,7 +23,11 @@ the environment its run saw and the host files it read are what this runner
 holds now. A stored unit whose runner inputs differ is reported as stale.
 
 What the shadow cannot see, and so never claims:
-- units the store has no passing footprint for (a new test, an untraced job);
+- units the store has no passing footprint for (a new test, an untraced job).
+  Given the same `--discover` patterns as `cached-units`, it lists the test
+  files that have none as `unrecorded`: a file a PR adds belongs to that PR's
+  component, and one already on main leaves every component unproven. Without
+  the patterns they are invisible;
 - paths a unit listed or probed but did not read (directory listings, absent
   files);
 - anything about the runner that the record did not name (an ignored
@@ -33,6 +37,7 @@ comparison with the real run is how the gap gets measured.
 """
 
 import os
+from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
 from . import js_symbols
@@ -122,8 +127,23 @@ def writes(repo, contents, files, base, head):
     return out
 
 
-def decide(f, changes):
-    """Admit `changes` ({id: writes}) into `f` and say what Frontier would do with them."""
+def discovered(paths, patterns, strip):
+    """Unit names for the paths `cached-units --discover` would find, as it names them."""
+    return {
+        path[len(strip):]
+        for path in paths
+        if path.startswith(strip) and any(fnmatchcase(path, pattern) for pattern in patterns)
+    }
+
+
+def decide(f, changes, added=None, unrecorded=()):
+    """Admit `changes` ({id: writes}) into `f` and say what Frontier would do with them.
+
+    added: {id: unit names the change adds that have no certificate}; those units belong to
+    its component and must run. unrecorded: units on main with no certificate, which leave
+    every component unproven.
+    """
+    added = added or {}
     conflicts = {}
     for cid, w in changes.items():
         packet = f.admit(cid, w, dict(title=f"PR #{cid}"))
@@ -138,6 +158,7 @@ def decide(f, changes):
         proven = {u: f.proves(u, members) for u in cone}
         components.append(dict(
             members=group, cone=len(cone), needs=f.needs(group), overlaps=f.overlaps(group),
+            unrecorded=sorted(set().union(*(added.get(c, ()) for c in group))),
             # Units only a signed proof (a PR's own CI run) proves on main plus this group.
             by_proof=sorted(u for u, c in proven.items() if c is not None and c.source == "proof"),
         ))
@@ -146,11 +167,15 @@ def decide(f, changes):
         stale=sorted(u for u in f.certs if not f.proves(u, set())),
         components=components,
         conflicts=conflicts,
-        unrun=sorted(c for comp in components if not comp["needs"] for c in comp["members"]),
+        unrecorded=sorted(unrecorded),
+        unrun=[] if unrecorded else sorted(
+            c for comp in components if not comp["needs"] and not comp["unrecorded"] for c in comp["members"]
+        ),
     )
 
 
-def shadow(repo, snapshot, store, job, receipt=None, attempts=None, env=None, proofs=None):
+def shadow(repo, snapshot, store, job, receipt=None, attempts=None, env=None, proofs=None,
+           discover=None, strip=""):
     """The shadow decision for one snapshot; with a run's receipt, what actually passed too.
 
     `proofs`: a store `concurrent-merge proof take` filled with signed records, such as
@@ -162,13 +187,21 @@ def shadow(repo, snapshot, store, job, receipt=None, attempts=None, env=None, pr
     f = program(repo, store, job, base, contents, env, proofs)
     files = by_file(f.readers)
     changes = {p["number"]: writes(repo, contents, files, base, p["head"]) for p in snapshot["changes"]}
+    added, unrecorded = {}, set()
+    if discover:
+        on_main = discovered(contents.tree(base), discover, strip)
+        unrecorded = {u for u in on_main if u not in f.certs}
+        for p in snapshot["changes"]:
+            new = discovered(contents.tree(p["head"]), discover, strip) - on_main
+            added[p["number"]] = sorted(u for u in new if u not in f.certs)
     out = dict(
         kind="lit-shadow-decision",
         base=base,
         job=job,
         proofs=proofs is not None,
+        discover=list(discover or ()),
         writes={n: sorted(w) for n, w in changes.items()},
-        decision=decide(f, changes),
+        decision=decide(f, changes, added, unrecorded),
     )
     if receipt is not None:
         passed = set(receipt.get("tested", ()))
