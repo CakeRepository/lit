@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -113,12 +114,55 @@ def split_failed(members, remaining, failed, changes):
     return [], *halves[:1], f"blame: {result['action']}, halving"
 
 
+# Before any batch has finished, assume about one ready PR in fifty is red (a first batch of 32).
+PRIOR_RED, PRIOR_TESTED = 0.1, 5.0
+MAX_AUTO_BATCH = 128
+
+
+def red_share(red):
+    """Recent share of ready PRs that came back red, from decayed [returned, tested] counts."""
+    returned, tested = red or (0.0, 0.0)
+    return (returned + PRIOR_RED) / (tested + PRIOR_TESTED)
+
+
+def group_size(red):
+    """How many ready PRs one batch should hold, by Hwang's binary splitting.
+
+    With a share p of ready PRs red, a group of 2^a with a = floor(log2((1 - p) / p))
+    is about as large as a group can be before a red result, and the halving it starts,
+    costs more runs than the extra PRs save: one in ten red gives batches of 8, one in
+    a hundred gives 64."""
+    p = min(0.5, max(1 / (2 * MAX_AUTO_BATCH), red_share(red)))
+    return max(1, min(MAX_AUTO_BATCH, 2 ** math.floor(math.log2((1 - p) / p))))
+
+
+def counted(record, returned, tested, keep=0.8):
+    """`record` with `returned` red PRs out of `tested` finished ones added to its red counts.
+
+    Each PR counts once, when it lands or goes back to its author. Older counts fade
+    by `keep` per finished batch, so the size follows the swarm's current red share.
+    A split that sends nobody back finishes no PR and changes nothing."""
+    if not tested:
+        return record
+    old_returned, old_tested = record.get("red") or (0.0, 0.0)
+    red = [round(old_returned * keep + returned, 4), round(old_tested * keep + tested, 4)]
+    return dict(record, red=red)
+
+
+def batch_limit(max_batch, record):
+    """The most ready PRs a fresh batch takes: None (all of them), a fixed number, or sized by red share."""
+    if max_batch == "auto":
+        return group_size(record.get("red"))
+    return max_batch
+
+
 class Intake:
-    def __init__(self, repository, branch, context, repo, *, original_prs_only=False):
+    def __init__(self, repository, branch, context, repo, *, original_prs_only=False, max_batch=None):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
             raise ValueError("Invalid GitHub repository")
         self.repo = repo
         self.original_prs_only = original_prs_only
+        self.max_batch = max_batch
         self.repository, self.branch, self.context = repository, branch, context
         self.url = "https://github.com/" + repository + ".git"
         self.target = "refs/heads/" + branch
@@ -227,7 +271,7 @@ class Intake:
                 )
         return record
 
-    def claim(self, refs, base, tip, remaining=()):
+    def claim(self, refs, base, tip, remaining=(), red=None):
         self.fetch_commits([refs[self.target]])
         members = manifest(self.repo, batch_name(base, tip), tip, refs[self.target])
         green = verify_sources(self.repository, self.branch, members, self.context)
@@ -239,6 +283,8 @@ class Intake:
             started=now(),
             source_green_at=green,
         )
+        if red:
+            record["red"] = red
         # A single source is a one-member batch too: its batch PR runs the full suites on the exact
         # tree the queue will build, and the queue group reuses that run while main has not moved.
         # (A record marked "individual" by an older coordinator still advances on the original PR.)
@@ -247,7 +293,7 @@ class Intake:
         self.push([(self.active, refs.get(self.active, ""), lock), *branches])
         return lock, record
 
-    def assemble(self, refs, selected=None):
+    def assemble(self, refs, selected=None, limit=None):
         base = refs[self.target]
         pins = {
             int(ref.rsplit("/", 1)[1]): head
@@ -268,6 +314,10 @@ class Intake:
                 print(f"Hold #{n}: {reason or 'ready ref changed'}", flush=True)
                 continue
             rows.append(dict(number=n, head=head, author=pr["author"]["login"]))
+        if limit and len(rows) > limit:
+            # Lowest PR numbers first; the rest stay pinned for the next batch.
+            print(f"Batching {limit} of {len(rows)} ready PRs; the rest wait for the next batch.", flush=True)
+            rows = rows[:limit]
         if not rows:
             return None
         self.fetch_commits([base, *(p["head"] for p in rows)])
@@ -324,7 +374,14 @@ class Intake:
             (pin_ref(n), head, "") for n, head in remove if refs.get(pin_ref(n)) == head
         ]
         pending = record.get("remaining", []) if pending is None else pending
-        next_lock = self.record(dict(remaining=pending), lock) if pending else ""
+        red = record.get("red")
+        if pending:
+            next_lock = self.record(dict(remaining=pending, **({"red": red} if red else {})), lock)
+        elif red and self.max_batch == "auto" and not self.original_prs_only:
+            # Keep the red counts between batches; an idle record has nothing left to do.
+            next_lock = self.record(dict(remaining=[], red=red), lock)
+        else:
+            next_lock = ""
         self.push([*edits, (self.active, lock, next_lock)])
 
     def advance_individual(self, refs, lock, record):
@@ -430,6 +487,7 @@ class Intake:
                 f"Landed batch #{number} with {len(record['members'])} source PRs.",
                 flush=True,
             )
+            record = counted(record, 0, len(record["members"]))
             self.finish(refs, lock, record, record["members"])
             return True
         if "closing" in record:
@@ -520,8 +578,10 @@ class Intake:
             if reason == "failed_checks" and len(members) > 1:
                 remove, pending, why = self.blame(record, trusted)
                 print(f"Batch #{number}: {why}", flush=True)
-                self.plan_close(lock, record, remove, pending)
+                self.plan_close(lock, counted(record, len(remove), len(remove)), remove, pending)
             else:
+                if reason == "failed_checks":
+                    record = counted(record, len(members), len(members))
                 self.plan_close(lock, record, members, record["remaining"])
             return True
         if (
@@ -725,9 +785,12 @@ class Intake:
                     time.sleep(30)
                 continue
             groups = record.get("remaining", [])
-            prepared = self.assemble(refs, groups[0] if groups else None)
+            if groups:
+                prepared = self.assemble(refs, groups[0])
+            else:
+                prepared = self.assemble(refs, None, batch_limit(self.max_batch, record))
             if prepared:
-                self.claim(refs, *prepared, remaining=groups[1:])
+                self.claim(refs, *prepared, remaining=groups[1:], red=record.get("red"))
             elif groups:
                 self.finish(refs, lock, record, pending=groups[1:])
             else:
@@ -735,7 +798,7 @@ class Intake:
                 return
 
 
-def main(argv=None, *, repository, branch="main", context, original_prs_only=False):
+def main(argv=None, *, repository, branch="main", context, original_prs_only=False, max_batch=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--repo-dir",
@@ -775,7 +838,9 @@ def main(argv=None, *, repository, branch="main", context, original_prs_only=Fal
         subprocess.run(["git", "init", "--bare", "--quiet", repo.path], check=True)
     if repo.out("rev-parse", "--is-bare-repository") != "true":
         parser.error("--repo-dir must be a dedicated bare repository")
-    api = Intake(repository, branch, context, repo, original_prs_only=original_prs_only)
+    api = Intake(
+        repository, branch, context, repo, original_prs_only=original_prs_only, max_batch=max_batch
+    )
     if args.action == "withdraw":
         if not re.fullmatch(r"[0-9a-f]{40}", args.head):
             parser.error("withdraw requires the exact 40-hex source head")
