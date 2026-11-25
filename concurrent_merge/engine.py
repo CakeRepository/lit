@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import shlex
 import subprocess
 import tempfile
@@ -16,6 +17,7 @@ from .parallel import (
     tree_entries,
     worker_count,
 )
+from . import readers
 from .structure import choose, has_driver, resolve_file
 
 
@@ -210,6 +212,7 @@ class Engine:
         self.state = Path(state)
         self.owners = {}
         self.history = []
+        self.hinted = set()
 
     def merge(self, ours, pr, owners, timestamp=None):
         base = pr.get("patch_base")
@@ -348,10 +351,17 @@ class Engine:
                         f"refs/concurrent-merge/conflicts/{key}/incoming",
                         pr["head"],
                     )
-                    write_json(
-                        self.state / "conflicts" / f"{key}.json",
-                        {**conflict, "id": key, "ours": ours},
-                    )
+                    record = {**conflict, "id": key, "ours": ours}
+                    hint = None
+                    if mode and readers.reader_for(path) is None:
+                        hint = readers.missing_reader_hint(path)
+                    if hint:
+                        record["hint"] = hint
+                        suffix = Path(path).suffix.lower()
+                        if suffix not in self.hinted:
+                            self.hinted.add(suffix)
+                            print("lit: " + record["hint"], file=sys.stderr)
+                    write_json(self.state / "conflicts" / f"{key}.json", record)
                     pending.append(key)
             if pending:
                 return None, fixes, pending

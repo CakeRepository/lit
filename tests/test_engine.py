@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,7 +11,7 @@ from unittest.mock import patch
 from concurrent_merge.cli import land, main, verified_changes
 from concurrent_merge.engine import Engine, Repo
 from concurrent_merge.proposal import matching_group, proposal_members, propose
-from concurrent_merge.structure import powershell_merge
+from concurrent_merge.structure import outline_merge
 from concurrent_merge.projection import preview, project
 
 
@@ -124,7 +123,6 @@ class BatchTests(unittest.TestCase):
             )
         self.assertEqual(self.repo.out("show-ref"), refs_before)
 
-    @unittest.skipUnless(shutil.which("pwsh"), "requires PowerShell")
     def test_structural_merge_and_one_test(self):
         a = self.pr(1, {"m.ps1": b"function A { 1 }; function B { 0 }\n"})
         b = self.pr(2, {"m.ps1": b"function A { 0 }; function B { 2 }\n"})
@@ -141,11 +139,25 @@ class BatchTests(unittest.TestCase):
         final, accepted = self.engine.batch(self.base, [a, b], check)
         self.assertEqual((accepted, tested), ({1, 2}, [final]))
         self.assertEqual(
-            self.engine.history[0]["resolved"][0]["method"], "powershell-ast"
+            self.engine.history[0]["resolved"][0]["method"], "powershell-outline"
         )
         for p in (a, b):
             self.repo.run("merge-base", "--is-ancestor", p["head"], final)
         self.assertEqual(self.repo.out("rev-parse", "main"), self.base)
+
+    def test_conflict_in_a_language_without_a_reader_invites_one(self):
+        base = self.commit(self.base, {"main.go": b"package main\nfunc A() {}\n"})
+        a = self.pr(1, {"main.go": b"package main\nfunc A() { a() }\n"}, base)
+        b = self.pr(2, {"main.go": b"package main\nfunc A() { b() }\n"}, base)
+        with patch("sys.stderr") as err:
+            _, accepted = self.engine.batch(base, [a, b], lambda _: "pass")
+        self.assertEqual(accepted, {1})
+        key = self.engine.history[0]["pending"][0]["conflicts"][0]
+        issue = json.loads((self.engine.state / "conflicts" / (key + ".json")).read_text())
+        self.assertIn("no reader for .go files", issue["hint"])
+        self.assertIn("github.com/CakeRepository/lit/issues", issue["hint"])
+        printed = "".join(c.args[0] for c in err.write.call_args_list)
+        self.assertEqual(printed.count("no reader for .go"), 1)
 
     def test_two_agents_same_login_must_agree(self):
         a = self.pr(1, {"test.txt": b"A"})
@@ -528,37 +540,22 @@ class BatchTests(unittest.TestCase):
             propose(args, lambda *_: snapshot)
             self.assertEqual(gh.call_count, 1)
 
-    @unittest.skipUnless(shutil.which("pwsh"), "requires PowerShell")
     def test_unicode_class_methods_crlf_bom_and_overlapping_change(self):
-        base = (
-            "# 😀\r\nclass Foo { [int] A() { return 1 }; [int] B() { return 2 } }\r\n"
-        )
+        base = "# 😀\r\nclass Foo {\r\n[int] A() { return 1 }\r\n[int] B() { return 2 }\r\n}\r\n"
 
         def encode(s):
-            return b"\xff\xfe" + s.encode("utf-16-le")
+            return b"\xef\xbb\xbf" + s.encode()
 
-        # PowerShell class members are separated by newlines.
-        base = base.replace(" }; [int]", " }\r\n[int]")
         left, right = (
             base.replace("return 1", "return 3"),
             base.replace("return 2", "return 4"),
         )
-        self.assertEqual(
-            powershell_merge(list(map(encode, (base, left, right)))),
-            encode(left.replace("return 2", "return 4")),
-        )
-        self.assertIsNone(
-            powershell_merge(
-                list(map(encode, (base, left, base.replace("return 1", "return 5"))))
-            )
-        )
+        merge = lambda *texts: outline_merge("m.ps1", list(map(encode, texts)))
+        self.assertEqual(merge(base, left, right), encode(left.replace("return 2", "return 4")))
+        self.assertIsNone(merge(base, left, base.replace("return 1", "return 5")))
 
-    @unittest.skipUnless(shutil.which("pwsh"), "requires PowerShell")
-    def test_disjoint_control_flow_blocks_on_one_line(self):
+    def test_blocks_inside_one_function_go_back_to_the_author(self):
         base = b"function Get-Value { if ($x) { return 1 } else { return 2 } }"
         left = base.replace(b"return 1", b"return 3")
         right = base.replace(b"return 2", b"return 4")
-        self.assertEqual(
-            powershell_merge([base, left, right]),
-            left.replace(b"return 2", b"return 4"),
-        )
+        self.assertIsNone(outline_merge("m.ps1", [base, left, right]))

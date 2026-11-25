@@ -12,7 +12,8 @@ lit is built to be driven by coding agents. Many agents can open PRs at once; li
 4. Read the receipt: `run` prints the path of `result.json`. It lists the passing subset, and `attempts.json` beside it lists every candidate and failure. A held change has a conflict file under `batch-state/conflicts` with the exact Git blobs to fix.
 5. Fix a conflict: write the agreed file bytes and record your vote with `concurrent-merge agree` (below). Rerun step 3.
 6. Land: `concurrent-merge land` pushes the tested commit with a lease, or `concurrent-merge propose` opens a PR for repositories that require GitHub's merge queue.
-7. Skip tests that cannot be affected: `trace-units` and `cached-units` record what each test file read and rerun only files whose inputs changed (see "One footprint per test file").
+7. Teach lit your language: if lit reports that it has no reader for your files, open an issue and send a reader (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+8. Skip tests that cannot be affected: `trace-units` and `cached-units` record what each test file read and rerun only files whose inputs changed (see "One footprint per test file").
 
 Every command reads and writes plain files and Git refs, so an agent can inspect each step with `cat`, `jq` and `git`.
 
@@ -56,6 +57,10 @@ Each reads the open, non-draft PRs against `--branch` and their current heads. `
 
 These rules, and the `land` that rechecks them, read GitHub over GraphQL and fall back to the REST API when GraphQL is refused, as some proxies and sandboxed agent sessions do. Set `LIT_GITHUB_API=rest` to skip GraphQL, or `LIT_GITHUB_API=graphql` to turn the fallback off. GitHub's merge queue has no REST API, so plain `collect` still needs GraphQL.
 
+### Pull requests from outside contributors
+
+`--hold-outside` keeps PRs whose authors have no write access (GitHub's author association is not owner, member or collaborator) out of the batch, and lists them so they can be reviewed first. After review, name the ones that passed with `--allow-outside 140 141`. Both are part of the snapshot's `selection`, so `land` holds the same PRs when it checks again.
+
 ### Several agents on one GitHub login
 
 lit hands a failure or a conflict back to the change's author, which is its GitHub login by default. When several agents open PRs from one shared account, give each change an `agent`:
@@ -80,7 +85,9 @@ For independent PRs, lit reads the path deltas in parallel and writes the entire
 
 ## Structural merges and author agreement
 
-Git handles paths, file types, modes, and renames. For a clean concurrent content merge, lit can verify Git's exact bytes by reconstructing all disjoint input hunks. For files that need structural comparison lit has its own declaration merge: Python files (`.py`, `.pyi`, `.pyw`) are read with Python's own `ast` module, and `.ps1`, `.psm1` and `.psd1` files with PowerShell's own parser when PowerShell 7 is installed. Files in other languages keep Git's line merge, and a real overlap goes back to the change that caused it. The Python merge matches functions, classes and methods by name, including their decorators. The PowerShell adapter matches functions, classes, members, named script blocks, and control-flow blocks such as if/else and try/catch. It preserves original text between declarations, checks for ambiguous identities, and parses the combined result. Applying a file resolution rebuilds only the Git directories on the affected paths.
+Git handles paths, file types, modes, and renames. For a clean concurrent content merge, lit can verify Git's exact bytes by reconstructing all disjoint input hunks. When two changes overlap in one file, lit outlines the file with its own reader for that language and merges it declaration by declaration, so two agents can each add a function or each change a different method and both land. lit has readers, written in Python with no outside tools, for Python (`.py`, `.pyi`, `.pyw`), JavaScript and TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), C# (`.cs`), PowerShell (`.ps1`, `.psm1`, `.psd1`), JSON (`.json`), YAML (`.yml`, `.yaml`) and Markdown (`.md`, `.markdown`). Units are matched by name: functions, classes and their members, imports, namespaces, JSON and YAML keys, Pester and JavaScript test blocks, and Markdown sections. Text between units merges by whole lines only, a unit both sides changed differently is merged one level down or not at all, and the combined result must read back cleanly. A reader that isn't sure of a file declines it, and then Git's line merge applies and a real overlap goes back to the change that caused it. Applying a file resolution rebuilds only the Git directories on the affected paths.
+
+When lit meets a code file in a language it has no reader for, it says so and asks agents to teach it: open an issue and send a PR that adds a reader. [CONTRIBUTING.md](CONTRIBUTING.md) shows how, with the shared tests every reader passes.
 
 A pending PR contributes none of its files to the candidate. Other PRs continue. Each JSON file under `batch-state/conflicts` identifies the path, Git stage blobs and modes, incoming PR revision, and participants. An author can read an input with `git -C batch.git cat-file blob OBJECT_ID`. Agents exchange proposed replacement bytes through their existing communication channel, then each records its agreement through the local adapter.
 

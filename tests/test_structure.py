@@ -4,7 +4,11 @@ import tempfile
 import unittest
 
 from concurrent_merge.engine import Engine, Repo
-from concurrent_merge.structure import has_driver, python_merge, resolve_file
+from concurrent_merge.structure import has_driver, outline_merge, resolve_file
+
+
+def python_merge(blobs):
+    return outline_merge("m.py", blobs)
 
 BASE = b'''import os
 
@@ -55,10 +59,36 @@ class PythonMergeTests(unittest.TestCase):
         theirs = BASE.replace(b"return 2", b"return 4")
         self.assertIsNone(python_merge([BASE, ours, theirs]))
 
-    def test_added_or_renamed_definitions_are_left_to_git(self):
+    def test_definitions_added_on_both_sides_are_kept_in_order(self):
         ours = BASE + b"\n\ndef third():\n    return 3\n"
-        theirs = BASE.replace(b"return 2", b"return 20")
+        theirs = BASE.replace(b"return 2", b"return 20") + b"\n\ndef fourth():\n    return 4\n"
+        self.assertEqual(
+            python_merge([BASE, ours, theirs]),
+            BASE.replace(b"return 2", b"return 20")
+            + b"\n\ndef third():\n    return 3\n\n\ndef fourth():\n    return 4\n",
+        )
+
+    def test_imports_added_on_both_sides_merge(self):
+        ours = BASE.replace(b"import os\n", b"import os\nimport re\n")
+        theirs = BASE.replace(b"import os\n", b"import os\nimport sys\n")
+        self.assertEqual(python_merge([BASE, ours, theirs]), BASE.replace(b"import os\n", b"import os\nimport re\nimport sys\n"))
+        self.assertEqual(python_merge([BASE, ours, ours]), ours)
+
+    def test_the_same_name_added_differently_is_a_conflict(self):
+        ours = BASE + b"\n\ndef third():\n    return 3\n"
+        theirs = BASE + b"\n\ndef third():\n    return 30\n"
         self.assertIsNone(python_merge([BASE, ours, theirs]))
+
+    def test_deleting_what_the_other_side_changed_is_a_conflict(self):
+        gone = BASE.replace(b"def second():\n    return 2\n\n\n", b"")
+        changed = BASE.replace(b"return 2", b"return 20")
+        self.assertIsNone(python_merge([BASE, gone, changed]))
+        other = BASE.replace(b"return 1\n\n\ndef second", b"return 10\n\n\ndef second")
+        self.assertEqual(python_merge([BASE, gone, other]), gone.replace(b"return 1\n", b"return 10\n", 1))
+
+    def test_reordered_definitions_are_a_conflict(self):
+        swapped = BASE.replace(b"def first():\n    return 1\n\n\ndef second():\n    return 2\n", b"def second():\n    return 2\n\n\ndef first():\n    return 1\n")
+        self.assertIsNone(python_merge([BASE, swapped, BASE.replace(b"size = 1", b"size = 2")]))
 
     def test_unparsable_input_or_result(self):
         broken = BASE.replace(b"def first():", b"def first(:")
@@ -78,12 +108,46 @@ class PythonMergeTests(unittest.TestCase):
         theirs = base.replace(b"return 2", b"return 5")
         self.assertEqual(python_merge([base, ours, theirs]), ours.replace(b"return 2", b"return 5"))
 
+    def test_code_after_the_last_definition_stays_once(self):
+        base = b"def a():\n    pass\n\nprint(1)\n"
+        ours = base + b"\ndef b():\n    pass\n"
+        theirs = base + b"\ndef c():\n    pass\n"
+        self.assertEqual(
+            python_merge([base, ours, theirs]),
+            base + b"\ndef b():\n    pass\n\ndef c():\n    pass\n",
+        )
+
+    def test_one_import_added_on_both_sides_comes_out_once(self):
+        base = b"import a\n\n\ndef f():\n    pass\n"
+        ours = base.replace(b"import a\n", b"import a\nimport os\n")
+        theirs = base.replace(b"import a\n", b"import a\nimport os\nimport sys\n")
+        self.assertEqual(python_merge([base, ours, theirs]), theirs)
+
+    def test_text_between_definitions_merges_by_whole_lines_only(self):
+        base = b"def a():\n    pass\n\nX = 1  # one\nY = 2\n\ndef b():\n    pass\n"
+        ours = base.replace(b"# one", b"# first")
+        theirs = base.replace(b"X = 1", b"X = 10")
+        self.assertIsNone(python_merge([base, ours, theirs]))
+        both_lines = base.replace(b"Y = 2", b"Y = 20")
+        self.assertIsNone(python_merge([base, ours, both_lines]))
+        apart = b"def a():\n    pass\n\nX = 1\n\n\nY = 2\n\ndef b():\n    pass\n"
+        self.assertEqual(
+            python_merge([apart, apart.replace(b"X = 1", b"X = 2"), apart.replace(b"Y = 2", b"Y = 3")]),
+            apart.replace(b"X = 1", b"X = 2").replace(b"Y = 2", b"Y = 3"),
+        )
+
+    def test_plain_lines_inserted_at_one_spot_are_a_conflict(self):
+        base = b"def a():\n    pass\n\nX = 1\n\ndef b():\n    pass\n"
+        ours = base.replace(b"X = 1\n", b"X = 1\nY = 2\n")
+        theirs = base.replace(b"X = 1\n", b"X = 1\nZ = 3\n")
+        self.assertIsNone(python_merge([base, ours, theirs]))
+
     def test_registration(self):
         self.assertTrue(has_driver("pkg/mod.py"))
-        self.assertFalse(has_driver("web/app.ts"))
+        self.assertFalse(has_driver("web/app.rb"))
         self.assertEqual(resolve_file("web/app.ts", [BASE] * 3), (None, None))
         ours = BASE.replace(b"return 2", b"return 3")
-        self.assertEqual(resolve_file("m.py", [BASE, ours, BASE]), (ours, "python-ast"))
+        self.assertEqual(resolve_file("m.py", [BASE, ours, BASE]), (ours, "python-outline"))
 
 
 class EnginePythonTests(unittest.TestCase):
@@ -115,7 +179,7 @@ class EnginePythonTests(unittest.TestCase):
             final, accepted = engine.batch(start, changes, lambda _: "pass")
             self.assertEqual(accepted, {1, 2})
             self.assertEqual(repo.run("show", final + ":m.py").stdout, b"def a():\n    return 1\ndef b(x):\n    return 0\n")
-            self.assertEqual(engine.history[0]["resolved"][0]["method"], "python-ast")
+            self.assertEqual(engine.history[0]["resolved"][0]["method"], "python-outline")
 
 
 if __name__ == "__main__":
