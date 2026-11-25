@@ -236,6 +236,15 @@ concurrent-merge run queue.json --repo batch.git --state state \
 
 lit then writes `shadow.json` next to the run's `result.json`: the groups Frontier would have formed, the tests each would have had to run, and which changes it would have landed without running anything that the full suite then failed. `concurrent-merge shadow queue.json --repo batch.git --store units --job suite` gives the same decision without running anything. Add `--shadow-proofs DIR` (or `--proofs DIR`) with a store that `proof take` filled, and each PR's own signed CI run counts as evidence for it too.
 
+Give the shadow the same `--discover` patterns (and `--strip`) as `cached-units`, or `--shadow-discover` and `--shadow-strip` on `run`, and it also lists test files with no passing footprint as `unrecorded`. A file a PR adds must run with that PR's group, and one already on main leaves nothing landing unrun. lit records its own suite this way, one process per file:
+
+```
+concurrent-merge cached-units --store units --job unit --workdir . \
+  --each 'env PYTHONPATH=tests python3 -m unittest tests/{}' --discover 'tests/test_*.py' --strip tests/
+```
+
+Run each file on its own. `unittest discover -p FILE` opens every file in the directory, so every unit would read every test file.
+
 ## License
 
 lit is licensed under the [Apache License, Version 2.0](LICENSE). Copies and derivative works must keep the [NOTICE](NOTICE) file.

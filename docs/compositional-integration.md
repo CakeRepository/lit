@@ -216,10 +216,20 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    *Tests:* `tests/test_shadow.py` builds a store and a repository and checks
    components, needs, overlaps, function-level reads, stale units, inputs
    both main and a change edited, conflicts, and the comparison with a run.
-   *Limits:* only traced jobs have footprints, so a unit the store doesn't
-   know (a new test, an untraced job) is invisible, and listings and absent
-   paths a unit probed are not inputs yet. `needs` is a lower bound until
-   the comparison shows otherwise.
+   *Limits:* only traced jobs have footprints. With `--discover` (the same
+   patterns `cached-units` uses) a test file without a passing footprint is
+   reported as `unrecorded`. A file a PR adds joins that PR's component, and
+   one on main leaves nothing unrun. Without the patterns, and for an
+   untraced job, such units are invisible. Listings and absent paths a unit
+   probed are not inputs yet. `needs` is a lower bound until the comparison
+   shows otherwise.
+   *First data, on lit's own suite:* 28 test files traced one per process at
+   5bf521b, then the landing of #30 (six files, one of them a new test file)
+   replayed. Frontier would have run 7 of the 28 files plus the new one,
+   which the store had no footprint for. Tracing each file through
+   `unittest discover -p FILE` instead put all 28 in the cone, because
+   discovery opens every file in `tests/`. How a suite is run per unit
+   decides how much the shadow can skip.
 2. **Certificates carry their environment** (done). `frontier.from_store`
    adds runner inputs to each certificate, keyed by absolute paths, which no
    repository path can be. The environment the run saw is one input: the
