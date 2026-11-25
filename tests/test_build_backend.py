@@ -40,7 +40,6 @@ class BuildBackendTest(unittest.TestCase):
             for module in REPO.joinpath("concurrent_merge").glob("*.py"):
                 self.assertIn(f"concurrent_merge/{module.name}", names)
             for extra in (
-                "ts_decls.mjs",
                 "ps_nodes.ps1",
                 "dotnet/Program.cs",
                 "dotnet/LitIlMap.csproj",
@@ -103,7 +102,7 @@ class BuildBackendTest(unittest.TestCase):
             "PKG-INFO",
             "build_backend/lit_build.py",
             "concurrent_merge/cli.py",
-            "concurrent_merge/ts_decls.mjs",
+            "concurrent_merge/js_symbols.py",
             "tests/test_build_backend.py",
         ):
             self.assertIn(expected, rel)
