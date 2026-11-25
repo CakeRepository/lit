@@ -97,7 +97,8 @@ def simulate(prog, *, per_hour, hours, writes=3, hot=0.05, preproved=True, inter
                     if other not in seen:
                         seen.add(other)
                         todo.append(other)
-        return sorted(seen, key=list(f.changes).index)
+        order = {c: i for i, c in enumerate(f.changes)}
+        return sorted(seen, key=order.__getitem__)
 
     def land(group, now):
         f.land(group)
