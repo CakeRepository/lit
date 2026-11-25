@@ -713,6 +713,11 @@ def main():
         help="Batch ready PRs ahead of GitHub's merge queue (ready, drain, tick, withdraw, report)",
     )
     intake_options(intake_cmd)
+    cmds.add_parser(
+        "proof",
+        help="Pack, sign, push, verify and take signed test results (concurrent-merge proof -h)",
+        add_help=False,
+    )
     preview = cmds.add_parser(
         "preview", help="Predict the combined tree before original PRs enter the queue"
     )
@@ -963,6 +968,10 @@ def main():
         type=Path,
         help="Additional Markdown to include in the PR description",
     )
+    if sys.argv[1:2] == ["proof"]:
+        from . import proof
+
+        return proof.main(sys.argv[2:])
     if sys.argv[1:2] == ["intake"]:
         # The intake has its own actions and options; this layer only names the repository.
         q = intake_options(argparse.ArgumentParser(prog="concurrent-merge intake"))
