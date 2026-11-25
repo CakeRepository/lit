@@ -133,6 +133,13 @@ class SymbolTests(unittest.TestCase):
         hits = lcov_hits("SF:lib.ts\nDA:2,1\nDA:3,1\nDA:5,0\nDA:6,0\nDA:7,0\nend_of_record\n", "")["lib.ts"]
         self.assertEqual(executed(table, hits), ["", "used"])
 
+    def test_own_code_on_the_first_line_counts_when_its_callback_never_ran(self):
+        table = self.table("export function p(xs: number[]) { return xs.map((x) => {\n  return x + 1\n}) }\n")
+        self.assertEqual(sorted(table["symbols"]), ["", "p", "p/@0"])
+        hits = lcov_hits("SF:lib.ts\nDA:1,1\nDA:2,0\nDA:3,1\nend_of_record\n", "")["lib.ts"]
+        self.assertIn("p", executed(table, hits))
+        self.assertNotIn("p/@0", executed(table, hits))
+
     @unittest.skipIf(traced(), "needs no outer tracer")
     def test_cached_units_skips_a_reader_of_a_changed_file_by_function(self):
         if not (shutil.which("strace") and shutil.which("bun")):

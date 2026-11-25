@@ -92,17 +92,27 @@ def _normal(path):
 def executed(table, hits):
     """Names of the table's symbols that ran, given {line: hits} for that file.
 
-    A function ran when a line strictly inside it ran; one with no instrumented
-    line inside counts as run when any of its lines ran (conservative for
-    one-line arrow functions, whose line runs when they are created). The file's
-    top-level code always counts as run.
+    A function ran when one of its own lines strictly inside it ran (lines
+    inside a function nested in it belong to that one). One with no such
+    instrumented line counts as run when any of its lines ran: conservative
+    for one-line arrow functions, whose line runs when they are created, and
+    for a function whose own code shares its first line with a callback. The
+    file's top-level code always counts as run.
     """
+    symbols = table["symbols"]
     ran = [""]
-    for name, f in table["symbols"].items():
+    for name, f in symbols.items():
         if name == "":
             continue
-        inner = [hits[n] for n in range(f["start"] + 1, f["end"]) if n in hits]
-        if any(inner) if inner else any(hits.get(n, 0) for n in range(f["start"], f["end"] + 1)):
+        nested = [
+            (c["start"], c["end"]) for n, c in symbols.items()
+            if n.startswith(name + "/") and "/" not in n[len(name) + 1:]
+        ]
+        own = [
+            hits[n] for n in range(f["start"] + 1, f["end"])
+            if n in hits and not any(a <= n <= b for a, b in nested)
+        ]
+        if any(own) if own else any(hits.get(n, 0) for n in range(f["start"], f["end"] + 1)):
             ran.append(name)
     return sorted(ran)
 
