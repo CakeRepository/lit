@@ -109,6 +109,8 @@ class ScaleTests(unittest.TestCase):
         self.assertEqual([r["seen"] for r in rows], [2_000, 20_000])
         self.assertGreater(rows[1]["largest"], 20 * rows[0]["largest"])
         self.assertLess(rows[1]["components"], rows[1]["in_flight"])
+        if rows[1]["peak_mb"] is not None:
+            self.assertGreaterEqual(rows[1]["peak_mb"], rows[0]["peak_mb"])
 
     def test_components_keep_admission_order_inside_a_large_group(self):
         f = Frontier({})

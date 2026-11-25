@@ -10,9 +10,23 @@ its time would grow with the count; with the two indexes it should stay flat.
 """
 
 import random
+import sys
 import time
 
+try:
+    import resource
+except ImportError:  # not on Windows
+    resource = None
+
 from .frontier import Certificate, Frontier
+
+
+def peak_mb():
+    """This process's peak resident memory so far, in MB (None where the platform can't say)."""
+    if resource is None:
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
 
 
 def bench(*, changes=1_000_000, functions=5_000_000, units=50_000, reads=40, writes=3,
@@ -41,7 +55,7 @@ def bench(*, changes=1_000_000, functions=5_000_000, units=50_000, reads=40, wri
             marks.pop(0)
             now = time.perf_counter()
             yield dict(in_flight=len(f.changes), seen=steps, refused=refused, landed=landed,
-                            us_per_change=round((now - started) / steps * 1e6, 1))
+                       us_per_change=round((now - started) / steps * 1e6, 1), peak_mb=peak_mb())
 
 
 def grouping(*, changes=1_000_000, functions=5_000_000, units=50_000, reads=40, writes=3,
@@ -73,7 +87,7 @@ def grouping(*, changes=1_000_000, functions=5_000_000, units=50_000, reads=40, 
                 seconds = min(seconds, time.perf_counter() - started)
             yield dict(in_flight=len(f.changes), seen=cid + 1, components=len(groups),
                        largest=max(map(len, groups), default=0),
-                       us_per_change=round(seconds / max(len(f.changes), 1) * 1e6, 2))
+                       us_per_change=round(seconds / max(len(f.changes), 1) * 1e6, 2), peak_mb=peak_mb())
 
 
 if __name__ == "__main__":
