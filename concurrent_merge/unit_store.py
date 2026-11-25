@@ -208,6 +208,7 @@ def cached_units(
     scratch=(),
     batch=None,
     proofs=(),
+    audit_book=None,
     host=True,
 ):
     """proofs: further stores, such as the one a pull request's own CI left at
@@ -215,6 +216,13 @@ def cached_units(
     in store, counts as passing, so a merge of two sides that each passed runs
     only the files that read changes from both. A store a pull request wrote is
     only as trustworthy as that pull request's own CI verdict.
+
+    audit_book: a file of each proof signer's audit record (proof.Book). A file
+    reused from a proof whose store names its signers (proof take writes that)
+    is rerun at the highest of those signers' shares, not audit_rate, while mode
+    is enforce. Each rerun's pass or fail goes back into the book for every
+    signer who vouched for it, so a clean signer is checked less over time and
+    one wrong result drops the rest of that signer's earlier proofs.
 
     host: compare files outside the checkout too. Off when the check runs on a
     machine unlike the one that recorded, as a merge queue's proof does.
@@ -271,7 +279,20 @@ def cached_units(
         for n in waiting:
             if found[n]["reuse"]:
                 decisions[n] = dict(found[n], proof=str(other))
-    audited = {n for n, d in decisions.items() if d["reuse"] and rng() < audit_rate}
+    book, vouched = None, {}
+    if audit_book is not None:
+        from .proof import Book, vouchers
+        book = Book.load(audit_book)
+        for n, d in decisions.items():
+            if d["reuse"] and d.get("proof"):
+                vouched[n] = vouchers(d["proof"], job, n)
+
+    def rate(n):
+        if vouched.get(n):
+            return max([audit_rate] + [book.share(s) for s in vouched[n]])
+        return audit_rate
+
+    audited = {n for n, d in decisions.items() if d["reuse"] and rng() < rate(n)}
     if mode == "shadow":
         to_run = list(names)
     elif mode == "plan":
@@ -281,6 +302,7 @@ def cached_units(
     if shards > 1:
         weights = {n: d.get("prior_seconds") or 0.1 for n, d in decisions.items()}
         to_run = shard_of(to_run, weights, shard, shards, pinned)
+    run_here = set(to_run)
     batched = None
     if batch and mode == "enforce" and to_run:
         batched = run_batch(batch, sorted(to_run), workdir / cwd, env, log)
@@ -323,6 +345,18 @@ def cached_units(
         n for n in ran if decisions[n]["reuse"] and ran[n]["exit_code"] != 0
     )
     failed = sorted(n for n, u in ran.items() if u["exit_code"] != 0)
+    checked = {}
+    if book is not None and mode == "enforce":
+        for n in sorted(audited & set(vouched) & run_here):
+            if n in ran:
+                ok = ran[n]["exit_code"] == 0
+            else:
+                ok = batched is not None and batched["exit_code"] == 0
+            for signer in vouched[n]:
+                book.record(signer, ok)
+                checked.setdefault(signer, dict(ok=0, wrong=0))["ok" if ok else "wrong"] += 1
+        if checked:
+            book.save(audit_book)
     predicted = [n for n in names if decisions[n]["reuse"]]
     row = dict(
         job=directory.name,
@@ -355,6 +389,7 @@ def cached_units(
             1 for d in decisions.values() if d["reuse"] and d.get("unchanged_functions")
         ),
         reusable_by_proof=sum(1 for d in decisions.values() if d["reuse"] and d.get("proof")),
+        signer_audits=checked,
         starved=starved(decisions),
         exit_code=1 if failed else 0,
     )

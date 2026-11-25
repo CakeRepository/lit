@@ -18,9 +18,11 @@ COMMIT, TREE = "a" * 40, "b" * 40
 IMAGE = "debian@sha256:" + "c" * 64
 
 
-def record(commit=COMMIT, name="tests/test_a.py", exit_code=0):
-    return dict(kind="lit-unit-footprints", commit=commit, tracked={}, external={},
-                units={name: dict(exit_code=exit_code, incomplete=[], seconds=1.0, tracked=[])})
+def record(commit=COMMIT, name="tests/test_a.py", exit_code=0, read=None, seconds=1.0):
+    tracked = {"src/a.py": read} if read else {}
+    return dict(kind="lit-unit-footprints", commit=commit, tracked=tracked, external={},
+                units={name: dict(exit_code=exit_code, incomplete=[], seconds=seconds,
+                                  tracked=sorted(tracked))})
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "needs ssh-keygen")
@@ -197,3 +199,104 @@ sys.exit(0 if all("ok" in open(f"src/{n}.py").read() for n in "ab") else 1)
         nothing = proof.take(str(remote), self.work, [pr_head], self.root / "none", repository="o/other",
                              allowed_signers=allowed, log=lambda *_: None)
         self.assertEqual(nothing, [])
+
+        # A new signer earns nothing yet: with an audit book, everything it vouched for reruns
+        # here, and each clean rerun goes on its record.
+        book = self.root / "book.json"
+        audited, ran = self.units(self.store, mode="enforce", host=False, proofs=[taken], audit_book=book)
+        self.assertEqual(audited["audited"], 1)                  # tests/test_a.py, from the proof
+        self.assertEqual(ran, ["a", "ab"])
+        self.assertEqual(audited["signer_audits"], {"bench@lit": dict(ok=1, wrong=0)})
+        self.assertEqual(proof.Book.load(book).data["bench@lit"]["clean"], 1)
+
+
+@unittest.skipUnless(shutil.which("ssh-keygen"), "needs ssh-keygen")
+class AgreementTests(unittest.TestCase):
+    """Throwaway keys for three machines; two of them are allowed to sign."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.allowed = self.root / "allowed_signers"
+        self.keys = {}
+        for name in ("bench", "laptop", "ci"):
+            key = self.root / name
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", str(key)], check=True)
+            self.keys[name] = key
+            with self.allowed.open("a") as out:
+                out.write(f"{name}@lit {key.with_suffix('.pub').read_text()}")
+        self.remote = self.root / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        self.repo = self.root / "repo"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+
+    def publish(self, signer, **unit):
+        store = self.root / f"store-{signer}"
+        (store / "unit" / "units").mkdir(parents=True, exist_ok=True)
+        (store / "unit" / "units" / "a.json").write_text(json.dumps(record(**unit)))
+        out = proof.pack(store, ["unit"], repository="o/r", commit=COMMIT, tree=TREE, image=IMAGE,
+                         out=self.root / f"p-{signer}" / "proof.json.gz")
+        proof.push(out, proof.sign(out, self.keys[signer]), str(self.remote), self.repo)
+
+    def take(self, into="taken", **kw):
+        log = []
+        accepted = proof.take(str(self.remote), self.repo, [COMMIT], self.root / into, repository="o/r",
+                              allowed_signers=self.allowed, image=IMAGE, log=log.append, **kw)
+        return accepted, proof.vouchers(self.root / into, "unit", "tests/test_a.py"), log
+
+    def test_what_two_machines_must_report_alike_leaves_out_timing(self):
+        same = proof.agreement_key(record(read="x", seconds=1.0), "tests/test_a.py")
+        self.assertEqual(same, proof.agreement_key(record(read="x", seconds=9.0), "tests/test_a.py"))
+        self.assertNotEqual(same, proof.agreement_key(record(read="y"), "tests/test_a.py"))
+        self.assertNotEqual(same, proof.agreement_key(record(read="x", exit_code=1), "tests/test_a.py"))
+
+    def test_one_signer_is_not_enough_when_two_are_required(self):
+        self.publish("bench", read="x")
+        accepted, vouched, _ = self.take(quorum=2)
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(vouched, [])
+        self.publish("laptop", read="x", seconds=3.0)
+        _, vouched, _ = self.take(into="taken2", quorum=2)
+        self.assertEqual(vouched, ["bench@lit", "laptop@lit"])
+
+    def test_signers_who_disagree_about_a_file_leave_it_to_run(self):
+        self.publish("bench", read="x")
+        self.publish("laptop", read="y")
+        _, vouched, log = self.take()
+        self.assertEqual(vouched, [])
+        self.assertTrue(any("disagree" in line for line in log))
+
+    def test_a_failed_audit_drops_what_that_signer_signed_before_it(self):
+        self.publish("bench", read="x")
+        book = proof.Book()
+        book.record("bench@lit", False, now=datetime.now(timezone.utc) + timedelta(seconds=1))
+        accepted, vouched, log = self.take(book=book)
+        self.assertEqual((accepted, vouched), ([], []))
+        self.assertTrue(any("failed an audit" in line for line in log))
+
+    def test_each_clean_streak_halves_a_signers_share_and_a_miss_resets_it(self):
+        book = proof.Book(step=2, floor=0.2)
+        self.assertEqual(book.share("bench@lit"), 1)
+        for expected in (1, 0.5, 0.5, 0.25, 0.25, 0.2):
+            book.record("bench@lit", True)
+            self.assertEqual(book.share("bench@lit"), expected)
+        book.record("bench@lit", False)
+        self.assertEqual(book.share("bench@lit"), 1)
+        self.assertIsNotNone(book.dropped_before("bench@lit"))
+        self.assertEqual(book.share("laptop@lit"), 1)
+
+    def test_the_book_round_trips_and_will_not_overwrite_a_newer_one(self):
+        path, other = self.root / "book.json", self.root / "other.json"
+        proof.book_pull(str(self.remote), self.repo, path)
+        proof.book_pull(str(self.remote), self.repo, other)
+        book = proof.Book.load(path)
+        book.record("bench@lit", True)
+        book.save(path)
+        proof.book_push(path, str(self.remote), self.repo)
+        self.assertEqual(proof.book_pull(str(self.remote), self.repo, self.root / "again.json").data["bench@lit"]["clean"], 1)
+        stale = proof.Book.load(other)
+        stale.record("bench@lit", False)
+        stale.save(other)
+        with self.assertRaises(subprocess.CalledProcessError):
+            proof.book_push(other, str(self.remote), self.repo)

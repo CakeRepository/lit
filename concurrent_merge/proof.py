@@ -159,6 +159,7 @@ def verify(proof, sig, allowed_signers, *, repository, commits, image=None,
         for name, bundle in part.get("units", {}).items():
             unit = (bundle.get("units") or {}).get(name)
             if (bundle.get("kind") != "lit-unit-footprints" or bundle.get("commit") != payload["commit"]
+                    or bundle.get("tree", payload.get("tree")) != payload.get("tree")
                     or not unit or unit.get("exit_code") != 0 or unit.get("incomplete")):
                 raise Rejected(f"Proof record for {job} {name} is not a passing record of its commit")
         for oid in part.get("symbols", {}):
@@ -191,6 +192,17 @@ def git(repo, *args, data=None):
     ).stdout.decode().strip()
 
 
+LIT_IDENTITY = dict(GIT_AUTHOR_NAME="lit", GIT_AUTHOR_EMAIL="lit@localhost",
+                    GIT_COMMITTER_NAME="lit", GIT_COMMITTER_EMAIL="lit@localhost")
+
+
+def _commit_tree(repo, tree, message, parent=None):
+    return subprocess.run(
+        ["git", "-C", str(repo), "commit-tree", tree, "-m", message] + (["-p", parent] if parent else []),
+        check=True, capture_output=True, env=dict(os.environ, **LIT_IDENTITY),
+    ).stdout.decode().strip()
+
+
 def push(proof, sig, remote, repo, *, prefix=REF_PREFIX):
     """Push the proof and its signature as one commit under prefix<commit>/<id>.
     The lease makes the push fail rather than replace an existing ref."""
@@ -199,12 +211,7 @@ def push(proof, sig, remote, repo, *, prefix=REF_PREFIX):
     tree = git(repo, "mktree", data=(
         f"100644 blob {blobs[0]}\tproof.json.gz\n100644 blob {blobs[1]}\tproof.json.gz.sig\n"
     ).encode())
-    env = dict(GIT_AUTHOR_NAME="lit", GIT_AUTHOR_EMAIL="lit@localhost",
-               GIT_COMMITTER_NAME="lit", GIT_COMMITTER_EMAIL="lit@localhost")
-    made = subprocess.run(
-        ["git", "-C", str(repo), "commit-tree", tree, "-m", f"lit proof for {payload['commit']}"],
-        check=True, capture_output=True, env=dict(os.environ, **env),
-    ).stdout.decode().strip()
+    made = _commit_tree(repo, tree, f"lit proof for {payload['commit']}")
     ref = proof_ref(payload["commit"], sig, prefix)
     git(repo, "push", "--quiet", f"--force-with-lease={ref}:", remote, f"{made}:{ref}")
     return ref
@@ -238,24 +245,159 @@ def fetch(remote, repo, commits, into, *, prefix=REF_PREFIX):
             yield files["proof.json.gz"], files["proof.json.gz.sig"]
 
 
+def agreement_key(bundle, name):
+    """What two machines must report alike for one file: every repository input it
+    read with its content, the directories it listed, the files it found missing,
+    and its pass. Timing, host paths and the runner's kernel are left out."""
+    unit = bundle["units"][name]
+    reads = dict(
+        tracked={path: bundle["tracked"].get(path) for path in unit.get("tracked", [])},
+        listings={d: bundle.get("listing_children", {}).get(d) for d in unit.get("listings", [])},
+        absent=sorted(unit.get("absent") or []),
+        exit_code=unit.get("exit_code"),
+    )
+    return sha256(json.dumps(reads, sort_keys=True).encode("utf8")).hexdigest()
+
+
+class Book:
+    """Each signer's audit record, kept by CI where signers cannot write it.
+
+    A signer starts with every file its proofs cover rerun (share 1). Each
+    clean streak of `step` audits halves the share, down to `floor`. A failed
+    audit resets the streak and drops every proof that signer made before it."""
+
+    def __init__(self, data=None, *, step=20, floor=0.05, parent=None):
+        self.data = data or {}
+        self.step, self.floor, self.parent = step, floor, parent
+
+    @classmethod
+    def load(cls, path, **kw):
+        try:
+            saved = json.loads(Path(path).read_text(encoding="utf8"))
+        except (OSError, ValueError):
+            return cls(**kw)
+        if saved.get("kind") != "lit-audit-book":
+            return cls(**kw)
+        return cls(saved.get("signers", {}), parent=saved.get("parent"), **kw)
+
+    def save(self, path):
+        write_json(Path(path), dict(kind="lit-audit-book", version=1, parent=self.parent,
+                                    signers=self.data))
+
+    def share(self, principal):
+        clean = self.data.get(principal, {}).get("clean", 0)
+        return max(self.floor, 0.5 ** (clean // self.step))
+
+    def dropped_before(self, principal):
+        reset = self.data.get(principal, {}).get("reset")
+        return _utc(reset) if reset else None
+
+    def record(self, principal, ok, now=None):
+        row = self.data.setdefault(principal, dict(clean=0, failed=0, reset=None))
+        if ok:
+            row["clean"] += 1
+        else:
+            row.update(clean=0, failed=row.get("failed", 0) + 1,
+                       reset=(now or datetime.now(timezone.utc)).isoformat())
+
+
+SIGNERS_INDEX = "proof-signers.json"
+BOOK_REF = "refs/heads/lit/audits"
+
+
+def book_pull(remote, repo, out, *, ref=BOOK_REF):
+    """Fetch the audit book kept at ref into out (an empty book if there is none
+    yet), remembering which commit it came from so book_push cannot overwrite a
+    newer one."""
+    listed = git(repo, "ls-remote", remote, ref)
+    if not listed:
+        Book().save(out)
+        return Book.load(out)
+    oid = listed.split()[0]
+    git(repo, "fetch", "-q", remote, f"+{ref}:refs/lit-book/fetched")
+    text = git(repo, "cat-file", "blob", f"{oid}:book.json")
+    Path(out).write_text(text + "\n", encoding="utf8")
+    book = Book.load(out)
+    book.parent = oid
+    book.save(out)
+    return book
+
+
+def book_push(path, remote, repo, *, ref=BOOK_REF):
+    """Push the book at path to ref, only if ref still points where book_pull
+    found it. Keep the jobs that write it in one concurrency group, and let only
+    the CI token push ref: whoever can write it can clear a signer's record."""
+    book = Book.load(path)
+    parent, book.parent = book.parent, None
+    blob = git(repo, "hash-object", "-w", "--stdin",
+               data=json.dumps(dict(kind="lit-audit-book", version=1, signers=book.data),
+                               indent=2, sort_keys=True).encode())
+    tree = git(repo, "mktree", data=f"100644 blob {blob}\tbook.json\n".encode())
+    commit = _commit_tree(repo, tree, "lit audit book", parent)
+    lease = f"--force-with-lease={ref}:{parent or ''}"
+    git(repo, "push", "-q", lease, remote, f"{commit}:{ref}")
+    book.parent = commit
+    book.save(path)
+    return commit
+
+
 def take(remote, repo, commits, store, *, repository, allowed_signers, image=None,
-         max_age=timedelta(hours=72), revoked=(), log=print):
-    """Fetch, verify and unpack every usable proof for commits into store.
-    Returns the accepted proofs' signers; a rejected proof is reported and skipped."""
-    accepted = []
+         max_age=timedelta(hours=72), revoked=(), quorum=1, book=None, log=print):
+    """Fetch and verify every proof for commits, then unpack each file's record
+    that at least `quorum` different signers reported alike (see agreement_key).
+    Writes store/<job>/proof-signers.json naming who vouched for each file, for
+    the audit share cached-units applies. Returns the accepted proofs."""
+    accepted, votes = [], {}
     with tempfile.TemporaryDirectory(prefix="lit-proofs-") as scratch:
         for proof, sig in fetch(remote, repo, commits, scratch):
             try:
                 payload = verify(proof, sig, allowed_signers, repository=repository, commits=commits,
                                  image=image, max_age=max_age, revoked=revoked)
+                dropped = book.dropped_before(payload["signer"]) if book else None
+                if dropped and _utc(payload["created"]) <= dropped:
+                    raise Rejected(f"{payload['signer']} failed an audit after making it")
             except Rejected as reason:
                 log(f"Skipped a proof for {proof.parent.name[:12]}: {reason}")
                 continue
-            count = unpack(payload, store)
             accepted.append(dict(commit=payload["commit"], signer=payload["signer"],
-                                 fingerprint=payload["fingerprint"], records=count))
-            log(f"Took {count} records for {payload['commit'][:12]} signed by {payload['signer']}")
+                                 fingerprint=payload["fingerprint"]))
+            for job, part in payload["jobs"].items():
+                for name, bundle in part["units"].items():
+                    slot = votes.setdefault((job, name, agreement_key(bundle, name)), dict(signers=set()))
+                    slot["signers"].add(payload["signer"])
+                    slot.setdefault("bundle", bundle)
+                    slot.setdefault("symbols", part.get("symbols", {}))
+    agreed = {}
+    for (job, name, _), slot in votes.items():
+        if len(slot["signers"]) < quorum:
+            continue
+        held = agreed.setdefault(job, {})
+        # Two different agreeing groups for one file is a disagreement: use neither.
+        held[name] = None if name in held else slot
+    index = {}
+    for job, files in agreed.items():
+        directory = job_dir(store, job)
+        for name, slot in files.items():
+            if slot is None:
+                log(f"Signers disagree about {job} {name}; it runs")
+                continue
+            write_json(unit_path(directory, name), slot["bundle"])
+            for oid, table in slot["symbols"].items():
+                write_json(symbols_path(directory, oid), table)
+            index.setdefault(job, {})[name] = sorted(slot["signers"])
+        write_json(directory / SIGNERS_INDEX, index.get(job, {}))
+    for job, files in index.items():
+        log(f"Took {len(files)} {job} files that {quorum} or more signers agree on")
     return accepted
+
+
+def vouchers(proof_store, job, name):
+    """The signers whose agreeing proofs put name's record in proof_store, if any."""
+    try:
+        index = json.loads((job_dir(proof_store, job) / SIGNERS_INDEX).read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return []
+    return index.get(name, [])
 
 
 def signers_at(repo, rev, out):
@@ -309,7 +451,26 @@ def main(argv):
         c.add_argument("--max-age-hours", type=float, default=72)
         c.add_argument("--revoked", type=Path, help="File of revoked key fingerprints, one per line")
         c.add_argument("--into", type=Path, required=True, help="Store for cached-units --proof-store")
+        if name == "take":
+            c.add_argument("--quorum", type=int, default=1,
+                           help="Different signers who must report a file alike before it counts")
+            c.add_argument("--audit-book", type=Path,
+                           help="Skip proofs a signer made before failing an audit")
+    for name, help_text in (("book-pull", "Fetch the signers' audit book"),
+                            ("book-push", "Push the audit book back if nobody changed it meanwhile")):
+        c = cmd.add_parser(name, help=help_text)
+        c.add_argument("book", type=Path)
+        c.add_argument("--remote", required=True)
+        c.add_argument("--repo", type=Path, default=Path("."))
+        c.add_argument("--ref", default=BOOK_REF)
     args = p.parse_args(argv)
+    if args.action == "book-pull":
+        book_pull(args.remote, args.repo, args.book, ref=args.ref)
+        print(args.book)
+        return 0
+    if args.action == "book-push":
+        print(book_push(args.book, args.remote, args.repo, ref=args.ref))
+        return 0
     if args.action == "pack":
         commit = git(args.workdir, "rev-parse", "HEAD")
         tree = git(args.workdir, "rev-parse", "HEAD^{tree}")
@@ -337,6 +498,7 @@ def main(argv):
             print(f"Took {unpack(payload, args.into)} records signed by {payload['signer']}")
             return 0
         accepted = take(args.remote, args.repo, args.commit, args.into, repository=args.repository,
-                        allowed_signers=allowed, image=args.image, max_age=max_age, revoked=revoked)
+                        allowed_signers=allowed, image=args.image, max_age=max_age, revoked=revoked,
+                        quorum=args.quorum, book=Book.load(args.audit_book) if args.audit_book else None)
         print(json.dumps(accepted, indent=2))
     return 0

@@ -197,6 +197,22 @@ concurrent-merge proof take --remote https://github.com/OWNER/REPO.git --repo . 
 
 A proof counts only when an allowed signer in `.lit/allowed_signers` signed it, read from the target branch so a change cannot add the key that vouches for it. It must also be for this repository, one of the given commits and the given image, and no older than `--max-age-hours` (72 by default). `--revoked` names key fingerprints to refuse. Anything else is skipped and those files run as usual. A signature says which machine made a claim, not that the claim is true: keep signing keys on machines that run tests in the same pinned image as CI, under an account the code under test cannot use, and keep an `--audit-rate` so CI still reruns a share of what proofs cover.
 
+Trust is earned rather than granted by the key. Two things make one machine's word count for less until it has a record:
+
+- **Agreement:** `take --quorum 2` uses a file's record only when at least two different signers report it alike: the same repository inputs with the same contents, the same directories listed, the same missing files and a pass. Timing and the machine itself are left out of the comparison. Signers that report a file differently leave it to run.
+- **Audits:** `cached-units --audit-book book.json` reruns each file a proof covers at its signers' share instead of `--audit-rate`. A new signer's share is 1, so everything it vouches for reruns. Every 20 clean audits halve the share, down to 5%. One wrong result puts it back to 1 and drops every proof that signer made before then; `take --audit-book` skips those.
+
+CI keeps the book at `refs/heads/lit/audits`, fetched before the run and pushed after it. The push fails rather than overwrite a newer book:
+
+```sh
+concurrent-merge proof book-pull book.json --remote https://github.com/OWNER/REPO.git
+concurrent-merge proof take ... --quorum 2 --audit-book book.json --into /tmp/proofs
+concurrent-merge cached-units ... --proof-store /tmp/proofs --audit-book book.json
+concurrent-merge proof book-push book.json --remote https://github.com/OWNER/REPO.git
+```
+
+Run the jobs that write the book in one concurrency group, and let only CI's token push `refs/heads/lit/audits` (a ruleset can do that), because whoever can write the book can clear a signer's record.
+
 ## Predict a landing
 
 To predict a landing before admission, run `concurrent-merge preview OWNER/REPO PR_NUMBER [PR_NUMBER ...] --repo batch.git --out observation.json`. It combines the source revisions with the latest assigned queue predecessor and records the source snapshot, queue snapshot, computed time and predicted tree. It also reports earlier entries whose commits are still unknown. After fetching the protected landing, compare it with the saved prediction using `python -m concurrent_merge.projection --repo batch.git --observation observation.json --landed LANDED_SHA`. Prediction uses local Git objects and reads GitHub without requesting CI or publishing a check.

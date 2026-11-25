@@ -542,7 +542,7 @@ def run_cached_units(args):
         symbols=args.symbols or (),
         scratch=args.scratch or (),
         batch=shlex.split(args.batch) if args.batch else None,
-        proofs=args.proof_store, host=not args.no_host,
+        proofs=args.proof_store, host=not args.no_host, audit_book=args.audit_book,
     )
     if args.receipt:
         write_json(args.receipt, result)
@@ -829,6 +829,8 @@ def main():
     store_units.add_argument("--strip", default="")
     store_units.add_argument("--proof-store", type=Path, action="append", default=[],
                              help="Another store whose records also count, such as a pull request's own")
+    store_units.add_argument("--audit-book", type=Path,
+                             help="Signers' audit record: rerun proof files at each signer's share and record the result")
     store_units.add_argument("--no-host", action="store_true",
                              help="Do not compare files outside the checkout")
     store_units.add_argument("--mode", choices=("shadow", "enforce", "plan"), default="shadow")
