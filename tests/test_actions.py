@@ -16,6 +16,14 @@ class ActionTests(unittest.TestCase):
             if "concurrent_merge.cli" in text:
                 self.assertIn('"$GITHUB_ACTION_PATH/../.."', text, f.parent.name)
 
+    def test_actions_write_no_bytecode_into_their_checkout(self):
+        # A container job runs as root; a __pycache__ it leaves in the action's checkout is
+        # root-owned, and the runner then fails to clean its actions folder for every later job.
+        for f in sorted(ACTIONS.glob("*/action.yml")):
+            for line in f.read_text().splitlines():
+                if "concurrent_merge.cli" in line:
+                    self.assertIn("python3 -B ", line, f.parent.name)
+
 
 if __name__ == "__main__":
     unittest.main()
