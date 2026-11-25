@@ -225,6 +225,15 @@ Run the engine regression tests with `python -m unittest discover -s tests -v`.
 
 `concurrent_merge/frontier.py` lands a change on its own test passes when no other change in flight shares a test unit with it, and runs only the overlaps when one does. [docs/compositional-integration.md](docs/compositional-integration.md) sets out its model, assumptions, safety invariant, costs and what is still open. Its simulator and benchmarks are synthetic and make no claim about production throughput.
 
+To see what it would decide on your own batches without changing anything, pass a unit store to `run`:
+
+```
+concurrent-merge run queue.json --repo batch.git --state state \
+  --shadow-store units --shadow-job suite --test python3 -m unittest
+```
+
+lit then writes `shadow.json` next to the run's `result.json`: the groups Frontier would have formed, the tests each would have had to run, and which changes it would have landed without running anything that the full suite then failed. `concurrent-merge shadow queue.json --repo batch.git --store units --job suite` gives the same decision without running anything.
+
 ## License
 
 lit is licensed under the [Apache License, Version 2.0](LICENSE). Copies and derivative works must keep the [NOTICE](NOTICE) file.
