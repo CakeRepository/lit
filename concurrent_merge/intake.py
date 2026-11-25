@@ -459,10 +459,10 @@ class Intake:
         if pr["isDraft"]:
             events = graphql(
                 """query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){
-              pullRequest(number:$n){timelineItems(last:1,itemTypes:[CONVERT_TO_DRAFT_EVENT]){totalCount}}}}""",
+              pullRequest(number:$n){timelineItems(last:1,itemTypes:[CONVERT_TO_DRAFT_EVENT]){nodes{__typename}}}}}""",
                 dict(zip(("o", "r", "n"), [*self.repository.split("/"), number])),
             )
-            if events["repository"]["pullRequest"]["timelineItems"]["totalCount"]:
+            if events["repository"]["pullRequest"]["timelineItems"]["nodes"]:
                 # A reviewer explicitly put the batch back into draft.
                 return False
             ready_for_review(self.repository, number)

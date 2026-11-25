@@ -19,6 +19,28 @@ from concurrent_merge.intake_guard import (
 
 
 class IntakeTests(unittest.TestCase):
+    def test_only_a_conversion_to_draft_holds_a_new_batch(self):
+        api = Intake("owner/repo", "main", "trusted", Mock())
+        record = dict(tip="head", members=[[1, "source"]])
+        draft = dict(state="OPEN", number=2, headRefOid="head", baseRefName="main", isDraft=True)
+        for events in ([], [{"__typename": "ConvertToDraftEvent"}]):
+            # GitHub counts unrelated timeline items even when the filtered nodes are empty.
+            timeline = dict(nodes=events, totalCount=6)
+            with (
+                self.subTest(events=events),
+                patch.object(api, "batch_pr", return_value=draft),
+                patch("concurrent_merge.intake.verify_sources"),
+                patch("concurrent_merge.intake.pull", return_value=(draft, None)),
+                patch("concurrent_merge.intake.graphql", return_value={"repository": {"pullRequest": {"timelineItems": timeline}}}) as query,
+                patch("concurrent_merge.intake.ready_for_review") as ready,
+            ):
+                self.assertEqual(api.advance({}, "lock", record), not events)
+                self.assertIn("itemTypes:[CONVERT_TO_DRAFT_EVENT]){nodes", query.call_args.args[0])
+                if events:
+                    ready.assert_not_called()
+                else:
+                    ready.assert_called_once_with("owner/repo", 2)
+
     def test_native_admission_resumes_after_a_partial_request(self):
         intake = Intake("owner/repo", "main", "trusted", Mock(), original_prs_only=True)
         started = "2026-11-23T00:00:00Z"
