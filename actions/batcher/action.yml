@@ -53,6 +53,8 @@ runs:
         [ -n "$LIT_CACHE" ] && extra=(--repo-dir "$LIT_CACHE")
         sizing=()
         [ -n "$LIT_MAX_BATCH" ] && sizing=(--max-batch "$LIT_MAX_BATCH")
+        # GITHUB_ACTION_PATH, not github.action_path: in a container job only the env var
+        # gives the path as the container sees it.
         python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
-          "${{ github.action_path }}/../.." intake "$LIT_REPOSITORY" \
+          "$GITHUB_ACTION_PATH/../.." intake "$LIT_REPOSITORY" \
           --branch "$LIT_BRANCH" --context "$LIT_CONTEXT" "${sizing[@]}" "${extra[@]}" tick --label "$LIT_LABEL"
