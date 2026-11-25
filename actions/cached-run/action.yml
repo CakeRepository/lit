@@ -1,0 +1,77 @@
+name: lit cached run
+description: >-
+  Run a test command under lit's footprint recorder and compare it with earlier
+  passing runs on this self-hosted runner. Shadow mode always runs the command.
+inputs:
+  job:
+    description: Name for this job's footprints, such as portal
+    required: true
+  run:
+    description: The test command, run with bash in the working directory
+    required: true
+  store:
+    description: Footprint store directory on the runner, outside the job's write access
+    required: true
+  mode:
+    description: shadow (always run) or enforce (skip when every recorded input matches)
+    default: shadow
+  audit-rate:
+    description: In enforce mode, the fraction of predicted reuses that still run
+    default: "0.1"
+  working-directory:
+    description: Checkout to trace
+    default: .
+  extra-args:
+    description: Additional cached-run options, such as --ignore-env RUNNER_* --allow-network
+    default: ""
+outputs:
+  decision:
+    description: ran, audited or reused
+    value: ${{ steps.lit.outputs.decision }}
+  prior-commit:
+    description: Commit whose footprint predicted this result, if any
+    value: ${{ steps.lit.outputs.prior-commit }}
+runs:
+  using: composite
+  steps:
+    - id: lit
+      shell: bash
+      env:
+        LIT_JOB: ${{ inputs.job }}
+        LIT_RUN: ${{ inputs.run }}
+        LIT_STORE: ${{ inputs.store }}
+        LIT_MODE: ${{ inputs.mode }}
+        LIT_AUDIT: ${{ inputs.audit-rate }}
+        LIT_WORKDIR: ${{ inputs.working-directory }}
+        LIT_EXTRA: ${{ inputs.extra-args }}
+      run: |
+        set -uo pipefail
+        command -v strace >/dev/null || { echo "::warning::strace is not installed; running without lit"; cd "$LIT_WORKDIR" && exec bash -c "$LIT_RUN"; }
+        receipt="$(mktemp)"
+        # shellcheck disable=SC2086
+        # Import lit from the action checkout without changing the job's own PYTHONPATH.
+        python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
+          "${{ github.action_path }}/../.." cached-run \
+          --store "$LIT_STORE" --job "$LIT_JOB" --workdir "$LIT_WORKDIR" \
+          --mode "$LIT_MODE" --audit-rate "$LIT_AUDIT" --receipt "$receipt" $LIT_EXTRA \
+          --test bash -c "$LIT_RUN"
+        status=$?
+        if [ -s "$receipt" ]; then
+          python3 - "$receipt" <<'PY' >> "$GITHUB_OUTPUT"
+        import json, sys
+        r = json.load(open(sys.argv[1]))
+        print("decision=" + r["decision"])
+        print("prior-commit=" + (r.get("prior_commit") or ""))
+        PY
+          python3 - "$receipt" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+        import json, sys
+        r = json.load(open(sys.argv[1]))
+        line = f"lit {r['mode']}: {r['decision']} {r['job']}"
+        if r.get("prior_commit"):
+            line += f", predicted by the passing run on {r['prior_commit'][:12]}"
+            if r["decision"] != "reused":
+                line += " (matched)" if r.get("sound") else " (DID NOT MATCH)"
+        print(line)
+        PY
+        fi
+        exit $status

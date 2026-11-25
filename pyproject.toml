@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "concurrent-merge-engine"
+version = "0.1.0"
+description = "Batch reviewed GitHub changes and validate their combined Git tree"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
+
+[project.scripts]
+concurrent-merge = "concurrent_merge.cli:main"
+
+[tool.setuptools]
+packages = ["concurrent_merge"]
+
+[tool.setuptools.package-data]
+concurrent_merge = ["ps_nodes.ps1", "dotnet/*.cs", "dotnet/*.csproj"]
