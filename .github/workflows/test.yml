@@ -42,10 +42,9 @@ jobs:
           run: python3 -c 'import sys; sys.path.insert(0, "."); import concurrent_merge.engine'
           store: ${{ runner.temp }}/lit-store
       - uses: ./actions/batcher
-        continue-on-error: true  # no GitHub App here; the pass fails at its first API call, after importing lit
-        env:
-          GITHUB_API_URL: http://127.0.0.1:9
-          LIT_GITHUB_API: rest
+        # No valid token here, so the pass fails at its first GitHub call, after importing lit and creating
+        # its Git cache, which is what has to stay cleanable.
+        continue-on-error: true
         with:
           token: none
           context: Tests / unit
