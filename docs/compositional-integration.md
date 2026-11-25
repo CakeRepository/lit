@@ -142,8 +142,10 @@ All of this is synthetic. None of it is a claim about production throughput
 or real Git landings.
 
 - `python -m concurrent_merge.frontier_bench N`: admit, prove and land per
-  change as up to `N` changes are in flight. It stays under about 100 µs per
-  change to 100,000.
+  change, with every other change left in flight, plus peak memory. On a map of
+  50,000 units reading 40 of 5,000,000 functions it stays under about 100 µs
+  per change all the way to 1,000,000 changes (349,000 in flight at the end),
+  and peak memory grows from 756 MB for the map alone to 1,967 MB.
 - `python -m concurrent_merge.frontier_bench grouping N`: `components()` cost
   per change as one component grows to most of what is in flight.
 - `python -m concurrent_merge.frontier_sim PER_HOUR HOURS`: one stream through
@@ -176,6 +178,54 @@ or real Git landings.
 - **Release bridges on real deploys.** `promotion.py` models the bridges
   (see below), but nothing yet connects a stage to a deploy, a tag or a
   check run.
+
+## Implementation plan for real Git
+
+Each step can land and be reverted on its own, and none weakens required
+checks, approvals or branch protection. Frontier only ever decides what lit
+itself runs. Whatever GitHub requires still runs on the tree that lands.
+
+1. **Shadow decisions.** Build the program map from the unit store
+   (`frontier.from_store`). For each batch `run` tests, record which
+   components and `needs` Frontier would have chosen, next to what ran and
+   what passed. Nothing changes behavior.
+   *Tests:* a stored job and a batch give the expected components and needs.
+   *Limits:* only traced jobs have footprints. An untraced job is one unit
+   that reads everything.
+2. **Certificates carry their environment.** Add a digest of the runner
+   image and toolchain to each certificate, and treat a mismatch as
+   unproven (assumption 3).
+   *Tests:* the same inputs in another environment prove nothing.
+   *Limits:* the digest only covers what is named in it.
+3. **Certificates from each PR's own CI.** Accept a PR run's footprints as
+   certificates on main-at-that-time plus the change, and only when signed
+   (see "Signed results from other machines" in the README).
+   *Tests:* signed receipts become certificates, and unsigned or mismatched
+   ones are ignored.
+   *Limits:* this trusts the signer's runner to have run what it says.
+4. **Test by component.** In `run`, split the collected PRs into Frontier
+   components and test each one's `needs` on its own tested ref, rather than
+   one batch for everything. A blocked component no longer holds back the
+   others.
+   *Tests:* two independent PRs give two tested refs, and a failure in one
+   leaves the other's receipt landable.
+   *Limits:* overlaps still run on the combined tree, and required checks
+   still run on what lands.
+5. **Land components in turn.** Land each component with `cli.publish` (the
+   compare-and-swap on the tested base). After a lost race, recheck `needs`
+   on the new main. A component whose cone doesn't read what landed lands
+   without rerunning.
+   *Tests:* against a local remote, a race costs a recheck, not a rerun, when
+   cones are disjoint.
+   *Limits:* each landing is one push, so very high rates need step 4's
+   components to be large enough to amortize it.
+6. **Bridges on refs.** Keep each stage as a ref (for example
+   `refs/lit/stages/<name>`) moved with `git update-ref` and the expected old
+   value. Read evidence from check runs on the snapshot's commit, and take
+   approval from the hosting platform's protected environments.
+   *Tests:* the `promotion.py` rules, replayed against a local repository.
+   *Limits:* deploying is outside lit. A stage records what was approved to
+   run, not what is running.
 
 ## Release bridges
 
