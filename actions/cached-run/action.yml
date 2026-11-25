@@ -51,8 +51,10 @@ runs:
         # shellcheck disable=SC2086
         # Import lit from the action checkout without changing the job's own PYTHONPATH.
         # GITHUB_ACTION_PATH, not github.action_path: in a container job only the env var
-        # gives the path as the container sees it.
-        python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
+        # gives the path as the container sees it. -B writes no __pycache__ into the action's
+        # checkout: a container job runs as root, and root-owned files there stop the runner
+        # from cleaning its actions folder before the next job.
+        python3 -B -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
           "$GITHUB_ACTION_PATH/../.." cached-run \
           --store "$LIT_STORE" --job "$LIT_JOB" --workdir "$LIT_WORKDIR" \
           --mode "$LIT_MODE" --audit-rate "$LIT_AUDIT" --receipt "$receipt" $LIT_EXTRA \
