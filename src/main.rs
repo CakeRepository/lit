@@ -11,6 +11,7 @@ mod cache_report;
 mod changes;
 mod collect;
 mod files;
+mod footprint;
 mod git;
 mod github;
 mod handback;
@@ -49,6 +50,8 @@ const NATIVE: &[(&str, Native)] = &[
     ("blame", reports::blame_command),
     ("score-bun", reports::score_command),
     ("cache-report", cache_report::command),
+    ("reuse", footprint::reuse),
+    ("select", footprint::select),
     ("collect", collect::command),
     ("land", land::command),
     ("proof", proof::command),
@@ -66,6 +69,11 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> i32 {
+    let (args, python) = match args.split_first() {
+        Some((s, rest)) if s == "--internal-parity-python" => (rest, true),
+        Some((s, rest)) if s == "--internal-parity-rust" => (rest, false),
+        _ => (args, std::env::var("LIT_IMPL").as_deref() == Ok("python")),
+    };
     match args.first().map(String::as_str) {
         Some("--internal-assemble") if args.len() == 2 => assembly::command(&args[1]),
         Some("--internal-outline") if args.len() == 2 => readers::command(&args[1]),
@@ -79,10 +87,8 @@ fn run(args: &[String]) -> i32 {
             let session = handback::begin();
             let command = args.first().and_then(|name| native(name));
             let code = match command {
-                Some(cmd) if std::env::var("LIT_IMPL").as_deref() != Ok("python") => {
-                    cmd(&args[1..])
-                }
-                _ => fallback(args),
+                Some(cmd) if !python => cmd(&args[1..]),
+                _ => fallback(args, python),
             };
             if let Err(e) = session.finish(&handback::paths(args)) {
                 eprintln!("lit: could not give some files back to their folder's owner: {e}");
@@ -104,7 +110,7 @@ fn version_line() -> String {
 }
 
 /// Runs args with the embedded Python lit.
-fn fallback(args: &[String]) -> i32 {
+fn fallback(args: &[String], python_only: bool) -> i32 {
     let python = match pyfallback::python() {
         Ok(p) => p,
         Err(e) => {
@@ -119,7 +125,7 @@ fn fallback(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let mut child = match pyfallback::command(&python, &dir, args).spawn() {
+    let mut child = match pyfallback::command(&python, &dir, args, python_only).spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("lit: {e}");

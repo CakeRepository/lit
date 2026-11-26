@@ -23,7 +23,7 @@ fn note(owners: &mut Owners, paths: impl IntoIterator<Item = Vec<u8>>, change: &
     }
 }
 
-fn private_dir(prefix: &'static str) -> tempfile::Builder<'static, 'static> {
+pub(crate) fn private_dir(prefix: &'static str) -> tempfile::Builder<'static, 'static> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix).rand_bytes(8);
     #[cfg(unix)]
@@ -34,11 +34,8 @@ fn private_dir(prefix: &'static str) -> tempfile::Builder<'static, 'static> {
     builder
 }
 
-fn candidate_test(repo: &Repo, directory: &Path, oid: &str, args: &[String]) -> Result<bool> {
-    let tmp = private_dir("candidate-")
-        .tempdir()
-        .map_err(|e| e.to_string())?;
-    let work = Repo::new(tmp.path())?;
+pub(crate) fn checkout(repo: &Repo, destination: &Path, oid: &str) -> Result<()> {
+    let work = Repo::new(destination)?;
     let src = repo
         .path()
         .to_str()
@@ -64,6 +61,14 @@ fn candidate_test(repo: &Repo, directory: &Path, oid: &str, args: &[String]) -> 
     )?;
     work.text(&["remote", "remove", "origin"], None)?;
     work.text(&["checkout", "-q", "--detach", oid], None)?;
+    Ok(())
+}
+
+fn candidate_test(repo: &Repo, directory: &Path, oid: &str, args: &[String]) -> Result<bool> {
+    let tmp = private_dir("candidate-")
+        .tempdir()
+        .map_err(|e| e.to_string())?;
+    checkout(repo, tmp.path(), oid)?;
     let path = directory.join(format!("{oid}.log"));
     let log = fs::File::create(&path).map_err(|e| e.to_string())?;
     let out = Command::new(&args[0])

@@ -11,7 +11,8 @@
 //! which hold the test command's own output. Batch commits are made at
 //! SOURCE_DATE_EPOCH, which parity pins, so commit IDs must match exactly.
 
-use crate::json::{self, Value};
+use crate::json::Value;
+use crate::json_paths as paths;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
@@ -98,10 +99,15 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         None
     };
     let mut sides = Vec::new();
-    for (name, impl_) in [("python", "python"), ("rust", "rust")] {
+    for name in ["python", "rust"] {
         let dir = work.join(name);
         copy_tree(&o.source, &dir).map_err(|e| fail(format!("copy inputs: {e}")))?;
         let mut cmd = Command::new(&o.program);
+        // Dispatch outside the observed job environment. A job may use, or
+        // record a digest of, every variable it inherits.
+        if o.args.first().is_some_and(|s| !s.starts_with('-')) {
+            cmd.arg(format!("--internal-parity-{name}"));
+        }
         let target = work.join(format!("{name}-landing.git"));
         if let Some(landing) = &landing {
             landing.configure(&mut cmd, &dir, &target).map_err(fail)?;
@@ -127,7 +133,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         let out = cmd
             .current_dir(&dir)
             .env("SOURCE_DATE_EPOCH", &o.epoch)
-            .env("LIT_IMPL", impl_)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .output()
             .map_err(|e| fail(format!("run {}: {e}", o.program.display())))?;
         let renames = rename_runs(&dir).map_err(|e| fail(e.to_string()))?;
@@ -143,7 +149,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
                 let raw = fs::read_to_string(draft).map_err(|e| fail(e.to_string()))?;
                 files.insert(
                     "(draft pull request)".into(),
-                    json::pretty(&json::parse(&raw).map_err(fail)?),
+                    paths::render(&paths::parse(raw.as_bytes()).map_err(fail)?),
                 );
             }
             files.insert(
@@ -154,8 +160,8 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         sides.push(Side {
             name,
             code: exit_code(&out.status),
-            stdout: match json::parse(&String::from_utf8_lossy(&out.stdout)) {
-                Ok(v @ (Value::Object(_) | Value::Array(_))) => json::pretty(&n.json(v, "")),
+            stdout: match paths::parse(&out.stdout) {
+                Ok(v @ (Value::Object(_) | Value::Array(_))) => paths::render(&n.json(v, "")),
                 _ => n.stream(&out.stdout),
             },
             stderr: n.stream(&out.stderr),
@@ -478,8 +484,8 @@ impl Normalizer<'_> {
                 }
             };
             if rel.ends_with(".json") {
-                if let Ok(v) = json::parse(text) {
-                    files.insert(rel.to_string(), json::pretty(&self.json(v, "")));
+                if let Ok(v) = paths::parse(text.as_bytes()) {
+                    files.insert(rel.to_string(), paths::render(&self.json(v, "")));
                     return Ok(());
                 }
             }
