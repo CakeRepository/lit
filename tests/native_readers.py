@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from concurrent_merge import readers
+from concurrent_merge import js_symbols
 from reader_conformance import ReaderConformance
 
 
@@ -40,11 +41,22 @@ def suite(binary):
                     actual = readers.native_outline(binary, ext, blob)
                     expected = None if b"\x00" in blob else language.outline(blob, ext)
                     assert actual == expected, (ext, blob[:100])
+                    if ext in js_symbols.SUFFIXES:
+                        assert js_symbols.table(blob, ext) == js_symbols.reference_table(blob, ext), (ext, blob[:200])
             tests.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(cls))
     if not suffixes or exercised != set(suffixes):
         raise ValueError(f"Missing native conformance suite for {set(suffixes) - exercised}")
     if ".py" in suffixes:
         tests.addTests(unittest.defaultTestLoader.loadTestsFromName("test_structure"))
+    native_table = js_symbols.table
+    def checked_table(blob, suffix):
+        actual = native_table(blob, suffix)
+        expected = js_symbols.reference_table(blob, suffix)
+        if actual != expected:
+            raise AssertionError((suffix, blob[:400], expected, actual))
+        return actual
+    js_symbols.table = checked_table
+    tests.addTests(unittest.defaultTestLoader.loadTestsFromName("test_symbols"))
     return tests
 
 

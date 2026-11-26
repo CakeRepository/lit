@@ -1,6 +1,7 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
 mod csharp;
 mod javascript;
+pub(crate) use javascript::symbols;
 mod json_reader;
 mod markdown;
 mod powershell;

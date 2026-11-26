@@ -32,6 +32,7 @@ rules, from the safest end:
 import hashlib
 import json
 import re
+import subprocess
 from bisect import bisect_left
 
 from .readers.javascript import (
@@ -985,6 +986,14 @@ class Module(Analysis):
 
 def table(blob, suffix):
     """The table for one file's bytes (see symbols.py), or None when it cannot be vouched for."""
+    from . import readers
+    if readers.native_program:
+        return json.loads(subprocess.run([readers.native_program, "--internal-symbol-table", suffix],
+                                         input=blob, stdout=subprocess.PIPE, check=True).stdout)
+    return reference_table(blob, suffix)
+
+
+def reference_table(blob, suffix):
     try:
         text = blob.decode("utf-8")
     except UnicodeDecodeError:

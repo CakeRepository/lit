@@ -1,6 +1,7 @@
 //! JavaScript and TypeScript declaration boundaries, including JSX and TSX.
 mod lexer;
 mod patterns;
+pub(crate) mod symbols;
 use super::Node;
 use lexer::{Kind, Scanner, Token};
 use std::collections::HashMap;
@@ -289,17 +290,20 @@ impl<'a> Parser<'a> {
         }
         Some((hi, "eof"))
     }
-    fn finish(&self, units: Vec<Unit>) -> Option<Vec<Node>> {
+    fn merge_overloads(&self, units: Vec<Unit>) -> Vec<Unit> {
         let mut merged = Vec::<Unit>::new();
         for mut u in units {
-            if merged
-                .last()
-                .is_some_and(|p| p.signature && p.overload && u.overload && p.key == u.key)
+            if let Some(prev) =
+                merged.pop_if(|p| p.signature && p.overload && u.overload && p.key == u.key)
             {
-                u.first = merged.pop()?.first;
+                u.first = prev.first;
             }
             merged.push(u);
         }
+        merged
+    }
+    fn finish(&self, units: Vec<Unit>) -> Option<Vec<Node>> {
+        let merged = self.merge_overloads(units);
         let mut seen = HashMap::new();
         let mut out = Vec::new();
         let whitespace = |c: char| {
@@ -486,20 +490,7 @@ impl<'a> Parser<'a> {
                     return None;
                 }
                 let close = self.close(pos);
-                let mut m = pos + 1;
-                let mut members = Vec::new();
-                while m < close {
-                    if self.v(m) == ";" {
-                        m += 1;
-                        continue;
-                    }
-                    let u = self.member(m, close)?;
-                    if u.end <= m || u.end > close {
-                        return None;
-                    }
-                    m = u.end;
-                    members.push(u);
-                }
+                let members = self.members(pos)?;
                 Unit::new(key, k, close + 1).body(self.finish(members)?)
             }
             "interface" if self.name_follows(j + 1) => {
@@ -673,6 +664,24 @@ impl<'a> Parser<'a> {
             }
             return Some(Unit::new(format!("{keyword} {}", names.join(",")), k, pos));
         }
+    }
+    fn members(&self, pos: usize) -> Option<Vec<Unit>> {
+        let close = self.close(pos);
+        let mut m = pos + 1;
+        let mut members = Vec::new();
+        while m < close {
+            if self.v(m) == ";" {
+                m += 1;
+                continue;
+            }
+            let u = self.member(m, close)?;
+            if u.end <= m || u.end > close {
+                return None;
+            }
+            m = u.end;
+            members.push(u);
+        }
+        Some(members)
     }
     fn member(&self, k: usize, hi: usize) -> Option<Unit> {
         let mut j = k;
