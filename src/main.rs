@@ -52,6 +52,8 @@ const NATIVE: &[(&str, Native)] = &[
     ("cache-report", cache_report::command),
     ("reuse", footprint::reuse),
     ("select", footprint::select),
+    ("trace", footprint::trace_cli::trace),
+    ("trace-units", footprint::trace_cli::units),
     ("collect", collect::command),
     ("land", land::command),
     ("proof", proof::command),

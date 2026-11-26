@@ -1,0 +1,25 @@
+usage: concurrent-merge trace-units [-h] [--repo REPO] [--commit COMMIT]
+                                    [--workdir WORKDIR] [--pattern PATTERN]
+                                    [--each TEMPLATE]
+                                    [--units-file UNITS_FILE] [--cwd CWD]
+                                    --out OUT [--log LOG]
+                                    [--ignore-env PATTERN] [--strict-env]
+                                    [--test ...]
+
+options:
+  -h, --help            show this help message and exit
+  --repo REPO
+  --commit COMMIT
+  --workdir WORKDIR     Trace in this clean checkout instead of a fresh one
+  --pattern PATTERN     Regex on a process's argv that starts a unit; group 1
+                        names it
+  --each TEMPLATE       Run each unit as its own traced command, with {} for
+                        the unit name
+  --units-file UNITS_FILE
+                        Unit names for --each, one per line
+  --cwd CWD             Directory in the checkout to run --each in
+  --out OUT
+  --log LOG             Write the command's output here
+  --ignore-env PATTERN
+  --strict-env
+  --test ...

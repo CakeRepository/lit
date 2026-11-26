@@ -1,0 +1,12 @@
+usage: concurrent-merge trace [-h] --repo REPO --commit COMMIT --out OUT
+                              [--log LOG] [--ignore-env PATTERN] --test ...
+
+options:
+  -h, --help            show this help message and exit
+  --repo REPO
+  --commit COMMIT
+  --out OUT
+  --log LOG             Write the job's output here
+  --ignore-env PATTERN  Leave matching environment variables out of the record
+                        (repeatable)
+  --test ...

@@ -1,6 +1,10 @@
 //! Predict reuse from recorded filesystem observations of a job or its units.
 mod compare;
+mod events;
 mod glob;
+mod record;
+mod summary;
+pub(crate) mod trace_cli;
 mod tracer;
 mod workspace;
 
