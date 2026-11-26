@@ -20,6 +20,7 @@ encoding_rs = "0.8"
 ruff_python_parser = "=0.0.4"
 ruff_python_ast = "=0.0.4"
 ruff_text_size = "=0.0.4"
+tempfile = "3"
 
 [profile.release]
 lto = true

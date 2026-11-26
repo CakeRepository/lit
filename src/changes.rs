@@ -14,6 +14,9 @@ pub struct Change {
 }
 
 impl Change {
+    pub fn participant(&self) -> String {
+        format!("PR#{}@{} ({})", self.number, self.head, self.author)
+    }
     pub fn message(&self) -> String {
         let mut msg = format!(
             "Batch PR #{}\n\nPull-Request: #{}\nPR-Author: {}\n",

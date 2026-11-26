@@ -1,4 +1,5 @@
 //! Run Git in the repository explicitly selected by the caller.
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -8,6 +9,10 @@ pub struct Repo {
 }
 
 impl Repo {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn new(path: &Path) -> Result<Self, String> {
         // Git for Windows expects drive paths, not the verbatim paths returned by canonicalize.
         let path = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -27,9 +32,9 @@ impl Repo {
         self.output_env(args, input, &[])
     }
 
-    fn output_env(
+    fn output_env<S: AsRef<OsStr>>(
         &self,
-        args: &[&str],
+        args: &[S],
         input: Option<&[u8]>,
         env: &[(&str, &str)],
     ) -> Result<Output, String> {
@@ -85,6 +90,18 @@ impl Repo {
                 "git {}: {}",
                 args[0],
                 String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    }
+
+    pub fn path_args(&self, args: &[OsString]) -> Result<Vec<u8>, String> {
+        let out = self.output_env(args, None, &[])?;
+        if out.status.success() {
+            Ok(out.stdout)
+        } else {
+            Err(format!(
+                "git: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
             ))
         }
     }

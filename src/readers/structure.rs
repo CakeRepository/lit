@@ -291,7 +291,7 @@ fn checked_root(suffix: &str, bytes: &[u8]) -> Option<Node> {
     Some(root)
 }
 
-fn merge(suffix: &str, blobs: [&[u8]; 3]) -> Option<Vec<u8>> {
+pub(crate) fn merge(suffix: &str, blobs: [&[u8]; 3]) -> Option<Vec<u8>> {
     let [base, ours, theirs] = blobs.map(|b| checked_root(suffix, b));
     let roots = [base?, ours?, theirs?];
     let views = std::array::from_fn(|i| View {
