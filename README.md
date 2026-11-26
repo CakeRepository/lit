@@ -28,6 +28,12 @@ go build -o lit ./cmd/lit
 ./lit version
 ```
 
+Each `v*` tag publishes a release with a binary for Linux, macOS and Windows on amd64 and arm64, and their SHA-256 sums in `SHA256SUMS`. Check a download before you run it:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
 The binary runs its Python from a private folder in the OS temp directory, never from the checkout, the action folder, `HOME` or `RUNNER_TEMP`. When it runs as root, as a GitHub container job does, it gives anything it created under the paths you name back to the owner of their folder, so the runner can still clean up. CI checks both with `scripts/root-hygiene.sh`.
 
 ## Run a batch
