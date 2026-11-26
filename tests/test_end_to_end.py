@@ -17,6 +17,7 @@ The PRs, all opened against the same main:
 """
 
 import json
+import os
 import tempfile
 import textwrap
 import unittest
@@ -241,6 +242,21 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(git(s.root / "batch.git", "show", result["final"] + ":calc.py"), agreed.read_text().rstrip("\n"))
         s.lit("land", str(receipt), "--repo", "batch.git")
         self.assertEqual(s.remote_main(), result["final"])
+
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "lit parity is part of the binary")
+    def test_parity_of_collect_and_run(self):
+        """The commands this scenario drives give the same result run twice from the
+        same inputs, and, once they move to Go, the same result in Go as in Python."""
+        s = self.s
+        git(s.root, "clone", "-q", "--bare", str(s.gh.remote), "batch.git")
+        collect = ["collect", s.gh.repository, "--repo", "batch.git", "--out", "queue.json",
+                   "--prs", *map(str, range(1, 10))]
+        for args in (collect, ["run", "queue.json", "--repo", "batch.git", "--state", "state", *TEST]):
+            proc = lit(s.root, s.env, "parity", "--", *args)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("match", proc.stdout)
+            if args is collect:
+                s.lit(*collect)
 
 
 if __name__ == "__main__":

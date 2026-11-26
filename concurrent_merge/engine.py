@@ -415,7 +415,8 @@ class Engine:
         accepted = set(accepted)
         # Rebuilding a prefix during this split must reproduce its commit IDs
         # even if the test takes hours or the prefix takes another assembly path.
-        timestamp = int(time.time())
+        # SOURCE_DATE_EPOCH pins it, so two runs of one batch name the same commits (lit parity).
+        timestamp = int(os.environ.get("SOURCE_DATE_EPOCH") or time.time())
         failed_commits = set()
 
         def attempt(group):

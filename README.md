@@ -34,6 +34,8 @@ Each `v*` tag publishes a release with a binary for Linux, macOS and Windows on 
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
+`lit parity COMMAND ...` runs a command with the Python lit and with the Go lit, each in its own copy of the current folder, and fails if their exit codes, output, files or Git refs differ. Times, durations, test logs and the random part of a run folder may differ; batch commits are made at `SOURCE_DATE_EPOCH`, which parity pins, so their IDs must match. A command moves to Go only once its parity cases match. Until then parity runs Python twice, which checks that the command gives the same result from the same inputs.
+
 The binary runs its Python from a private folder in the OS temp directory, never from the checkout, the action folder, `HOME` or `RUNNER_TEMP`. When it runs as root, as a GitHub container job does, it gives anything it created under the paths you name back to the owner of their folder, so the runner can still clean up. CI checks both with `scripts/root-hygiene.sh`.
 
 ## Run a batch

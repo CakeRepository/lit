@@ -47,6 +47,30 @@ func TestRunsTodaysLit(t *testing.T) {
 		t.Skip("python3 not installed")
 	}
 	bin := build(t)
+	work := scratchBatch(t)
+
+	before := tree(t, "../..")
+	cmd := exec.Command(bin, "run", "queue.json", "--repo", "batch.git", "--state", "state",
+		"--test", "test", "-f", "b.txt")
+	cmd.Dir = work
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("lit run: %v\n%s", err, out)
+	}
+	receipt := strings.TrimSpace(string(out))
+	var result struct{ Tested []int }
+	data, err := os.ReadFile(receipt[strings.LastIndex(receipt, "\n")+1:])
+	if err != nil || json.Unmarshal(data, &result) != nil || len(result.Tested) != 1 {
+		t.Fatalf("receipt %q: %v %s", receipt, err, data)
+	}
+	if after := tree(t, "../.."); after != before {
+		t.Fatal("lit wrote into its own source tree (bytecode or other files)")
+	}
+}
+
+// scratchBatch makes a folder with batch.git and queue.json for one PR that adds b.txt.
+func scratchBatch(t *testing.T) string {
+	t.Helper()
 	work := t.TempDir()
 	src := filepath.Join(work, "src")
 	os.Mkdir(src, 0o755)
@@ -68,22 +92,32 @@ func TestRunsTodaysLit(t *testing.T) {
 	})
 	os.WriteFile(filepath.Join(work, "queue.json"), snapshot, 0o644)
 
-	before := tree(t, "../..")
-	cmd := exec.Command(bin, "run", "queue.json", "--repo", "batch.git", "--state", "state",
-		"--test", "test", "-f", "b.txt")
+	return work
+}
+
+// TestParity runs lit parity on a batch: run is not in Go yet, so it checks
+// that two Python runs of the same batch agree, commit IDs included.
+func TestParity(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	bin := build(t)
+	work := scratchBatch(t)
+	// The test takes a second, so the two sides run in different seconds: their
+	// commit IDs match only because batch commits are made at SOURCE_DATE_EPOCH.
+	cmd := exec.Command(bin, "parity", "--", "run", "queue.json", "--repo", "batch.git",
+		"--state", "state", "--test", "sh", "-c", "sleep 1 && test -f b.txt")
 	cmd.Dir = work
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("lit run: %v\n%s", err, out)
+	if err != nil || !strings.Contains(string(out), "the runs match (exit 0)") {
+		t.Fatalf("lit parity: %v\n%s", err, out)
 	}
-	receipt := strings.TrimSpace(string(out))
-	var result struct{ Tested []int }
-	data, err := os.ReadFile(receipt[strings.LastIndex(receipt, "\n")+1:])
-	if err != nil || json.Unmarshal(data, &result) != nil || len(result.Tested) != 1 {
-		t.Fatalf("receipt %q: %v %s", receipt, err, data)
+	if _, err := os.Stat(filepath.Join(work, "state")); err == nil {
+		t.Fatal("lit parity ran the command in the real folder")
 	}
-	if after := tree(t, "../.."); after != before {
-		t.Fatal("lit wrote into its own source tree (bytecode or other files)")
+	cmd = exec.Command(bin, "parity")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("lit parity with no command should fail")
 	}
 }
 
