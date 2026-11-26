@@ -13,6 +13,64 @@ pub enum Value {
     Object(BTreeMap<String, Value>),
 }
 
+impl Value {
+    pub fn get(&self, key: &str) -> Option<&Self> {
+        match self {
+            Self::Object(map) => map.get(key),
+            _ => None,
+        }
+    }
+    pub fn field(&self, key: &str) -> Result<&Self, String> {
+        self.get(key)
+            .ok_or_else(|| format!("Missing JSON field {key}"))
+    }
+    pub fn string(&self) -> Result<&str, String> {
+        match self {
+            Self::String(value) => Ok(value),
+            _ => Err("Expected a JSON string".into()),
+        }
+    }
+    pub fn array(&self) -> Result<&[Self], String> {
+        match self {
+            Self::Array(value) => Ok(value),
+            _ => Err("Expected a JSON array".into()),
+        }
+    }
+    pub fn number(&self) -> Result<u64, String> {
+        match self {
+            Self::Number(value) => value
+                .parse()
+                .map_err(|_| "Expected a positive integer".into()),
+            _ => Err("Expected a JSON integer".into()),
+        }
+    }
+    pub fn boolean(&self) -> Result<bool, String> {
+        match self {
+            Self::Bool(value) => Ok(*value),
+            _ => Err("Expected a JSON boolean".into()),
+        }
+    }
+}
+
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Self::String(value.into())
+    }
+}
+impl From<u64> for Value {
+    fn from(value: u64) -> Self {
+        Self::Number(value.to_string())
+    }
+}
+pub fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
+    Value::Object(
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect(),
+    )
+}
+
 pub fn parse(text: &str) -> Result<Value, String> {
     let mut p = Parser {
         s: text.as_bytes(),
@@ -198,7 +256,7 @@ pub fn pretty(v: &Value) -> String {
 }
 
 fn write(v: &Value, depth: usize, out: &mut String) {
-    let pad = |n: usize, out: &mut String| out.extend(std::iter::repeat(' ').take(n));
+    let pad = |n: usize, out: &mut String| out.extend(std::iter::repeat_n(' ', n));
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),

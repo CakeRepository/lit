@@ -1,0 +1,30 @@
+usage: concurrent-merge collect [-h] [--branch BRANCH] --out OUT --repo REPO
+                                [--prs N [N ...]] [--label LABEL]
+                                [--min-reviews K] [--hold-outside]
+                                [--allow-outside N [N ...]]
+                                [--author-pattern REGEX]
+                                repository
+
+positional arguments:
+  repository
+
+options:
+  -h, --help            show this help message and exit
+  --branch BRANCH
+  --out OUT
+  --repo REPO
+  --prs N [N ...]       Collect these open PRs instead of the merge queue
+  --label LABEL         Collect open PRs carrying this label instead of the
+                        merge queue
+  --min-reviews K       Collect open PRs with at least K approvals on their
+                        current head
+  --hold-outside        Hold PRs whose authors have no write access (not
+                        owner, member or collaborator) until they are reviewed
+                        and passed with --allow-outside
+  --allow-outside N [N ...]
+                        With --hold-outside: outside contributors' PRs that
+                        passed review
+  --author-pattern REGEX
+                        Read each change's agent from its PR body (group 1 of
+                        the first match); unmatched PRs keep their GitHub
+                        login

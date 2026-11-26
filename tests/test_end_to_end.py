@@ -244,6 +244,54 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(s.remote_main(), result["final"])
 
     @unittest.skipUnless(os.environ.get("LIT_BIN"), "lit parity is part of the binary")
+    def test_native_collect_matches_both_apis_and_queue_pagination(self):
+        s = self.s
+        git(s.root, "init", "-q", "--bare", "batch.git")
+        args = ["collect", s.gh.repository, "--out", "snapshot.json", "--repo", "batch.git"]
+
+        def compare(options, expected=0):
+            result = s.lit("parity", "--", *args, *options)
+            self.assertIn(f"matches between Python and Rust (exit {expected})", result.stdout)
+
+        s.env["LIT_GITHUB_API"] = "auto"
+        s.gh.pulls[1].update(body="Agent: alice-2", labels=["ready"], association="NONE")
+        options = ["--prs", "1", "--label", "ready", "--hold-outside", "--author-pattern", "^Agent: (.+)$"]
+        compare(options)
+        compare([*options, "--allow-outside", "1"])
+        compare(["--prs", "999"], 2)
+        self.assertIn(("POST", "/graphql"), s.gh.calls)
+        self.assertTrue(any(method == "GET" for method, _ in s.gh.calls))
+
+        def page(query, variables):
+            n = 2 if variables["after"] else 1
+            pr = dict(number=n, headRefOid=s.heads[n], author=dict(login="agent"), body="",
+                      baseRefName="main", isDraft=False, state="OPEN", authorAssociation="MEMBER",
+                      labels=dict(nodes=[]), latestOpinionatedReviews=dict(nodes=[
+                          dict(state="APPROVED", author=dict(login="reviewer"), commit=dict(oid=s.heads[n]))
+                      ]))
+            info = dict(hasNextPage=n == 1, endCursor=str(n))
+            data = dict(ref=dict(target=dict(oid=s.base)))
+            if "mergeQueue(" in query:
+                entry = dict(state="QUEUED", headCommit=dict(oid=s.heads[n], tree=dict(oid=s.base)),
+                             pullRequest=pr)
+                data["mergeQueue"] = dict(entries=dict(nodes=[entry], pageInfo=info))
+            else:
+                data["pullRequests"] = dict(nodes=[pr], pageInfo=info)
+            return dict(data=dict(repository=data))
+
+        s.gh.graphql = page
+        s.gh.calls.clear()
+        compare(["--min-reviews", "1"])
+        compare([])
+        self.assertTrue(all(method == "POST" for method, _ in s.gh.calls))
+        s.env["LIT_PYTHON"] = str(s.root / "no-python")
+        s.lit(*args)
+        snapshot = json.loads((s.root / "snapshot.json").read_text(encoding="utf8"))
+        self.assertEqual([g["number"] for g in snapshot["groups"]], [1, 2])
+        for oid in (s.base, s.heads[1], s.heads[2]):
+            self.assertEqual(git(s.root / "batch.git", "rev-parse", "refs/concurrent-merge/inputs/" + oid), oid)
+
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "lit parity is part of the binary")
     def test_parity_of_collect_and_run(self):
         """The commands this scenario drives give the same result run twice from the
         same inputs, and, once they move to Rust, the same result in Rust as in Python."""

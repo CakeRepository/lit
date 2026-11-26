@@ -6,13 +6,16 @@
 
 mod agree;
 mod args;
+mod collect;
 mod files;
 mod git;
+mod github;
 mod handback;
 mod json;
 mod parity;
 mod pyfallback;
 mod sha256;
+mod snapshot;
 mod sys;
 
 use std::process::ExitCode;
@@ -25,7 +28,7 @@ type Native = fn(&[String]) -> i32;
 
 /// The commands written in Rust. Every other command runs on the embedded
 /// Python. A command joins this table once its parity cases match.
-const NATIVE: &[(&str, Native)] = &[("agree", agree::command)];
+const NATIVE: &[(&str, Native)] = &[("agree", agree::command), ("collect", collect::command)];
 
 fn native(name: &str) -> Option<Native> {
     NATIVE.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)

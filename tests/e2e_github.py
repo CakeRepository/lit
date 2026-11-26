@@ -44,6 +44,7 @@ class FakeGitHub:
         git(self.root, "init", "-q", "--bare", "-b", "main", str(self.remote))
         self.pulls = {}  # number -> dict(author, body, draft, labels, association)
         self.calls = []
+        self.graphql = None
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -52,6 +53,10 @@ class FakeGitHub:
 
             def do_POST(self):
                 fake.calls.append(("POST", self.path))
+                if self.path == "/graphql" and fake.graphql:
+                    request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    self._send(200, fake.graphql(request["query"], request["variables"]))
+                    return
                 self._send(403, dict(message="GraphQL is not served here"))
 
             def do_GET(self):
