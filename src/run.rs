@@ -113,71 +113,106 @@ struct Batch<'a> {
     history: Vec<Value>,
 }
 
-impl Batch<'_> {
-    fn attempt(&mut self, group: &[Change]) -> Result<()> {
-        let mut ours = self.tip.clone();
-        let mut owners = self.owners.clone();
-        let mut members = Vec::new();
-        let mut pending = Vec::new();
-        let mut fixes = Vec::new();
-        let mut available = self.accepted.clone();
-        let fast = if group.iter().all(|c| c.requires.is_subset(&available)) {
-            assembly::batch(self.engine.repo, &ours, group, self.engine.jobs, self.stamp)?
-        } else {
-            None
-        };
-        let kind = if let Some((tip, mut paths)) = fast {
-            ours = tip;
-            for change in group {
-                members.push(change.number);
+pub(crate) struct Assembly {
+    pub(crate) tip: String,
+    pub(crate) members: Vec<u64>,
+    owners: Owners,
+    pub(crate) entry: Value,
+}
+pub(crate) fn assemble(
+    engine: &mut Engine<'_>,
+    base: &str,
+    group: &[Change],
+    stamp: i64,
+    accepted: &BTreeSet<u64>,
+    prior_owners: &Owners,
+) -> Result<Assembly> {
+    let mut ours = base.to_owned();
+    let mut owners = prior_owners.clone();
+    let mut members = Vec::new();
+    let mut pending = Vec::new();
+    let mut fixes = Vec::new();
+    let mut available = accepted.clone();
+    let fast = if group.iter().all(|c| c.requires.is_subset(&available)) {
+        assembly::batch(engine.repo, &ours, group, engine.jobs, stamp)?
+    } else {
+        None
+    };
+    let kind = if let Some((tip, mut paths)) = fast {
+        ours = tip;
+        for change in group {
+            members.push(change.number);
+            note(
+                &mut owners,
+                paths.remove(&change.head).ok_or("Incomplete change set")?,
+                change,
+            );
+        }
+        "disjoint"
+    } else {
+        for change in group {
+            let missing: Vec<_> = change.requires.difference(&available).collect();
+            if !missing.is_empty() {
+                pending.push(object([
+                    ("number", change.number.into()),
+                    ("author", change.author.as_str().into()),
+                    ("requires", numbers(missing)),
+                ]));
+                continue;
+            }
+            let merged = engine.merge(&ours, change, &owners, stamp)?;
+            fixes.extend(merged.fixes);
+            if let Some(head) = merged.head {
                 note(
                     &mut owners,
-                    paths.remove(&change.head).ok_or("Incomplete change set")?,
+                    merge::path_changes(engine.repo, &ours, &head)?,
                     change,
                 );
+                ours = head;
+                members.push(change.number);
+                available.insert(change.number);
+            } else {
+                pending.push(object([
+                    ("number", change.number.into()),
+                    ("author", change.author.as_str().into()),
+                    ("conflicts", Value::Array(merged.conflicts)),
+                ]));
             }
-            "disjoint"
-        } else {
-            for change in group {
-                let missing: Vec<_> = change.requires.difference(&available).collect();
-                if !missing.is_empty() {
-                    pending.push(object([
-                        ("number", change.number.into()),
-                        ("author", change.author.as_str().into()),
-                        ("requires", numbers(missing)),
-                    ]));
-                    continue;
-                }
-                let merged = self.engine.merge(&ours, change, &owners, self.stamp)?;
-                fixes.extend(merged.fixes);
-                if let Some(head) = merged.head {
-                    note(
-                        &mut owners,
-                        merge::path_changes(self.engine.repo, &ours, &head)?,
-                        change,
-                    );
-                    ours = head;
-                    members.push(change.number);
-                    available.insert(change.number);
-                } else {
-                    pending.push(object([
-                        ("number", change.number.into()),
-                        ("author", change.author.as_str().into()),
-                        ("conflicts", Value::Array(merged.conflicts)),
-                    ]));
-                }
-            }
-            "three-way"
-        };
-        let entry = object([
-            ("assembly", kind.into()),
-            ("base", self.tip.as_str().into()),
-            ("candidate", ours.as_str().into()),
-            ("members", numbers(&members)),
-            ("pending", Value::Array(pending)),
-            ("resolved", Value::Array(fixes)),
-            ("result", "empty".into()),
-        ]);
+        }
+        "three-way"
+    };
+    let entry = object([
+        ("assembly", kind.into()),
+        ("base", base.into()),
+        ("candidate", ours.as_str().into()),
+        ("members", numbers(&members)),
+        ("pending", Value::Array(pending)),
+        ("resolved", Value::Array(fixes)),
+        ("result", "empty".into()),
+    ]);
+    Ok(Assembly {
+        tip: ours,
+        members,
+        owners,
+        entry,
+    })
+}
+
+impl Batch<'_> {
+    fn attempt(&mut self, group: &[Change]) -> Result<()> {
+        let Assembly {
+            tip: ours,
+            members,
+            owners,
+            entry,
+        } = assemble(
+            &mut self.engine,
+            &self.tip,
+            group,
+            self.stamp,
+            &self.accepted,
+            &self.owners,
+        )?;
         self.history.push(entry);
         let Value::Object(record) = self.history.last_mut().unwrap() else {
             unreachable!()

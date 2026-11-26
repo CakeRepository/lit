@@ -51,6 +51,8 @@ jobs:
           LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_dotnet_units.py
       - name: Frontier shadow decisions
         run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_shadow.py
+      - name: Protected intake and merge queue
+        run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_native_intake.py
       # lit as root in a container must leave nothing the runner cannot remove.
       - name: Root hygiene
         run: scripts/root-hygiene.sh "$RUNNER_TEMP/lit-linux-amd64"

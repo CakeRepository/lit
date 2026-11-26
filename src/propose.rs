@@ -251,7 +251,7 @@ fn matching_group(
     Ok(None)
 }
 
-fn encode(s: &str) -> String {
+pub(crate) fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| {
             if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
@@ -263,7 +263,7 @@ fn encode(s: &str) -> String {
         .collect()
 }
 
-fn prior(
+pub(crate) fn prior(
     client: &Client,
     repository: &str,
     branch: &str,
@@ -316,6 +316,7 @@ fn prior(
             pr.field("state")?.string()?.to_uppercase()
         };
         found.push(object([
+            ("number", pr.get("number").cloned().unwrap_or(Value::Null)),
             ("isCrossRepository", Value::Bool(!same)),
             ("headRefOid", source.field("sha")?.clone()),
             ("state", Value::String(state)),
@@ -325,7 +326,7 @@ fn prior(
     Ok(found)
 }
 
-fn create(
+pub(crate) fn create(
     client: &Client,
     repository: &str,
     branch: &str,

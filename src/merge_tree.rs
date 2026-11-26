@@ -135,6 +135,9 @@ pub fn entries(repo: &Repo, rev: &str, paths: &[&[u8]]) -> Result<BTreeMap<PathB
 }
 
 pub fn blobs(repo: &Repo, oids: &[String]) -> Result<Vec<Vec<u8>>> {
+    objects(repo, oids, "blob")
+}
+pub fn objects(repo: &Repo, oids: &[String], kind: &str) -> Result<Vec<Vec<u8>>> {
     let input = oids.iter().map(|s| format!("{s}\0")).collect::<String>();
     let raw = repo.bytes(&["cat-file", "-Z", "--batch"], Some(input.as_bytes()))?;
     let mut remain = raw.as_slice();
@@ -142,9 +145,12 @@ pub fn blobs(repo: &Repo, oids: &[String]) -> Result<Vec<Vec<u8>>> {
     for oid in oids {
         let (meta, body) = split(remain, 0)?;
         let fields = ascii(meta)?.split_whitespace().collect::<Vec<_>>();
-        let [found, "blob", len] = fields.as_slice() else {
+        let [found, actual, len] = fields.as_slice() else {
             return Err("Unexpected Git object type in batch response".into());
         };
+        if *actual != kind {
+            return Err("Unexpected Git object type in batch response".into());
+        }
         if found != oid {
             return Err("Unexpected blob in Git response".into());
         }
