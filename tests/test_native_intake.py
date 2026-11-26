@@ -274,7 +274,11 @@ class IntakeCLI(unittest.TestCase):
         self.gql("REMOVED_FROM_MERGE_QUEUE_EVENT", dict(repository=dict(pullRequest=dict(timelineItems=dict(nodes=[])))))
         self.rules.append(dict(method="PATCH", path=f"/repos/{REPO}/pulls/77", reply={}))
         zip_path = f"repos/{REPO}/actions/artifacts/211/zip"
-        self.get("actions/runs/123/artifacts?per_page=100&page=1", dict(artifacts=[
+        # The batch PR keeps its fast status (run 123); the failing tests' receipts are in its merge-group run.
+        self.get("actions/runs?event=merge_group&per_page=100", dict(workflow_runs=[
+            dict(id=456, head_branch=f"gh-readonly-queue/main/pr-77-{self.base}", head_sha="group",
+                 status="completed", created_at=WHEN)]))
+        self.get("actions/runs/456/artifacts?per_page=100&page=1", dict(artifacts=[
             dict(name="lit-tests", expired=False, archive_download_url=zip_path)]))
         with ZipFile(self.root / "failed.zip", "w", compression=ZIP_DEFLATED) as archive:
             archive.writestr("suite/result.json", json.dumps(dict(job="suite", failed_reads={

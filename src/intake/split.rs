@@ -158,9 +158,40 @@ fn receipts(client: &Client, repository: &str, run: &str) -> Result<Map> {
     }
     Ok(records.into_values().flatten().collect())
 }
+/// Ids of the completed runs of batch `n`'s newest merge group, oldest first. A batch that
+/// fails in the merge queue keeps its fast PR status, and the run behind that status never
+/// ran the full suites, so the receipts of the failing tests are only among these runs.
+pub(super) fn queue_runs(rows: &[Value], branch: &str, n: u64) -> Vec<String> {
+    let prefix = format!("gh-readonly-queue/{branch}/pr-{n}-");
+    let done: Vec<(&str, u64, &str)> = rows
+        .iter()
+        .filter(|r| {
+            string(r, "head_branch").is_some_and(|b| b.starts_with(&prefix))
+                && string(r, "status") == Some("completed")
+        })
+        .filter_map(|r| {
+            Some((
+                string(r, "created_at").unwrap_or(""),
+                r.get("id")?.number().ok()?,
+                string(r, "head_sha")?,
+            ))
+        })
+        .collect();
+    let Some(&(_, _, newest)) = done.iter().max_by_key(|(t, id, _)| (*t, *id)) else {
+        return vec![];
+    };
+    let mut ids: Vec<u64> = done
+        .iter()
+        .filter(|(_, _, h)| *h == newest)
+        .map(|(_, id, _)| *id)
+        .collect();
+    ids.sort_unstable();
+    ids.iter().map(u64::to_string).collect()
+}
 impl Intake<'_> {
     pub(super) fn blame(
         &self,
+        n: u64,
         row: &Value,
         m: &[Member],
         trusted: Option<&Value>,
@@ -196,14 +227,31 @@ impl Intake<'_> {
                         .collect(),
                 );
             }
-            let failed = if let Some(id) = trusted
-                .and_then(|v| string(v, "targetUrl"))
-                .and_then(|u| guard::run_id(self.src.repository, u))
-            {
-                receipts(self.src.client, self.src.repository, id).unwrap_or_default()
-            } else {
-                Map::new()
-            };
+            let listing = self.src.client.get(&format!(
+                "repos/{}/actions/runs?event=merge_group&per_page=100",
+                self.src.repository
+            ));
+            let mut runs = listing
+                .ok()
+                .and_then(|l| {
+                    l.get("workflow_runs")
+                        .and_then(|w| w.array().ok())
+                        .map(|w| queue_runs(w, self.src.branch, n))
+                })
+                .unwrap_or_default();
+            if runs.is_empty() {
+                if let Some(id) = trusted
+                    .and_then(|v| string(v, "targetUrl"))
+                    .and_then(|u| guard::run_id(self.src.repository, u))
+                {
+                    runs.push(id.to_owned());
+                }
+            }
+            let mut failed = Map::new();
+            for id in &runs {
+                failed
+                    .extend(receipts(self.src.client, self.src.repository, id).unwrap_or_default());
+            }
             Ok((failed, changed))
         })();
         let (failed, changed) = measured.unwrap_or_else(|e| {
@@ -216,6 +264,58 @@ impl Intake<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipts_come_from_the_newest_merge_group_of_the_batch() {
+        let run = |id: u64, branch: &str, sha: &str, status: &str, at: &str| {
+            crate::json::parse(&format!(r#"{{"id":{id},"head_branch":"{branch}","head_sha":"{sha}","status":"{status}","created_at":"{at}"}}"#)).unwrap()
+        };
+        let rows = vec![
+            run(
+                7,
+                "gh-readonly-queue/main/pr-12-aaa",
+                "old",
+                "completed",
+                "2026-01-01T10:00:00Z",
+            ),
+            run(
+                9,
+                "gh-readonly-queue/main/pr-12-bbb",
+                "new",
+                "completed",
+                "2026-01-01T11:00:00Z",
+            ),
+            run(
+                8,
+                "gh-readonly-queue/main/pr-12-bbb",
+                "new",
+                "completed",
+                "2026-01-01T11:00:00Z",
+            ),
+            run(
+                10,
+                "gh-readonly-queue/main/pr-12-bbb",
+                "new",
+                "in_progress",
+                "2026-01-01T11:00:00Z",
+            ),
+            run(
+                11,
+                "gh-readonly-queue/main/pr-120-ccc",
+                "x",
+                "completed",
+                "2026-01-01T12:00:00Z",
+            ),
+            run(
+                12,
+                "gh-readonly-queue/dev/pr-12-ddd",
+                "y",
+                "completed",
+                "2026-01-01T12:00:00Z",
+            ),
+        ];
+        assert_eq!(queue_runs(&rows, "main", 12), vec!["8", "9"]);
+        assert!(queue_runs(&rows, "main", 13).is_empty());
+    }
     #[test]
     fn fresh_size_and_decayed_returns() {
         let row = Value::Object(Map::new());
