@@ -104,7 +104,7 @@ esac
         curl.write_text("""#!/usr/bin/env bash
 set -eu
 while [[ "$1" != --output ]]; do shift; done
-[[ "$3" == https://github.com/CakeRepository/lit/releases/download/v0.1.0/lit-* ]]
+[[ "$3" == https://github.com/CakeRepository/lit/releases/download/v0.1.1/lit-* ]]
 cp "$LIT_FIXTURE_ASSET" "$2"
 """)
         curl.chmod(0o755)
@@ -112,7 +112,7 @@ cp "$LIT_FIXTURE_ASSET" "$2"
         # test on developer machines without strace.
         (self.tools / "strace").write_text("#!/bin/sh\nexit 1\n")
         (self.tools / "strace").chmod(0o755)
-        manifest = self.root / "actions/lib/v0.1.0.sha256"
+        manifest = self.root / "actions/lib/v0.1.1.sha256"
         names = [line.split()[1] for line in manifest.read_text().splitlines()]
         self.assertEqual(len(set(names)), 6)
         digest = hashlib.sha256(self.asset.read_bytes()).hexdigest()

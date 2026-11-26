@@ -290,6 +290,25 @@ class IntakeCLI(unittest.TestCase):
         record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
         self.assertEqual(record["direct"], "#2 has no full status")
 
+    def test_a_batch_pr_that_passed_the_full_suite_on_current_main_lands_on_main_itself(self):
+        # The members carry only the fast status; the batch PR itself passed the full suite at its tip.
+        git(self.remote, "update-ref", "refs/heads/" + self.branch, self.tip)
+        for n, head in self.members:
+            git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
+        self.lock(dict(base=self.base, tip=self.tip, members=self.members, remaining=[], started=WHEN,
+                       direct="#1 has no full status"))
+        self.full_suite(77)
+        self.pulls([1, 2])
+        self.pulls([77])
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=77, state="OPEN", headRefOid=self.tip, isCrossRepository=False, url="fixture")
+        ]))))
+        self.gql("REMOVED_FROM_MERGE_QUEUE_EVENT", dict(repository=dict(pullRequest=dict(timelineItems=dict(nodes=[])))))
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.tip)
+        self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+
     def test_main_refusing_lit_s_push_sends_the_batch_through_the_queue(self):
         self.pinned_batch()
         self.full_suite(1)
@@ -311,7 +330,7 @@ class IntakeCLI(unittest.TestCase):
         remote = side / "intake-remote.git"
         self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.base)
         record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
-        self.assertEqual(record["direct"], "main refused lit's push: protected branch")
+        self.assertEqual(record["refused"], "main refused lit's push: protected branch")
 
     def test_a_failed_batch_returns_the_implicated_source_and_rechecks_the_other(self):
         from zipfile import ZipFile, ZIP_DEFLATED
