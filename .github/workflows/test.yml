@@ -33,6 +33,9 @@ jobs:
             CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build -trimpath -o "$RUNNER_TEMP/lit-${target/\//-}" ./cmd/lit
           done
           ls -l "$RUNNER_TEMP"/lit-*
+      # The same end-to-end merge checks the Python suite runs, against the binary.
+      - name: End to end with the binary
+        run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_end_to_end.py -v
       # lit as root in a container must leave nothing the runner cannot remove.
       - name: Root hygiene
         run: scripts/root-hygiene.sh "$RUNNER_TEMP/lit-linux-amd64"
