@@ -21,7 +21,7 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## One binary
 
-lit is becoming one Rust binary, `lit`, with nothing else to install ([#35](https://github.com/CakeRepository/lit/issues/35)). It takes the same commands and options as `concurrent-merge`. A command that has not moved to Rust yet runs on the Python lit built into the binary, so for now the machine still needs Python 3.12 or later. The native GitHub client uses ureq for HTTPS and fancy-regex for author capture patterns. Build it with Rust 1.85 or later:
+lit is becoming one Rust binary, `lit`, with nothing else to install ([#35](https://github.com/CakeRepository/lit/issues/35)). It takes the same commands and options as `concurrent-merge`. A command that has not moved to Rust yet runs on the Python lit built into the binary, so for now the machine still needs Python 3.12 or later. The native GitHub client uses ureq for HTTPS and fancy-regex for author capture patterns. The Python source reader uses Ruff’s parser. Build lit with Rust 1.94 or later:
 
 ```sh
 cargo build --release
