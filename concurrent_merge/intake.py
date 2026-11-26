@@ -49,6 +49,20 @@ def enqueue(pr, head):
     )
 
 
+def disable_auto_merge(pr_id):
+    return graphql(
+        """mutation($pr:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$pr}){clientMutationId}}""",
+        dict(pr=pr_id),
+    )
+
+
+TAKEOVER_NOTE = (
+    "lit turned off auto-merge on this PR because it carries the `{label}` label. "
+    "lit will batch it with other ready PRs and merge it through the merge queue. "
+    "To merge it on its own instead, remove the label before turning auto-merge back on."
+)
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -725,11 +739,34 @@ class Intake:
         )
         return [row["number"] for row in rows if "pull_request" in row]
 
+    def take_over(self, numbers, label):
+        """The label hands a PR to lit, so lit owns its merge. Turn off native auto-merge on a
+        labelled PR that GitHub has not queued yet; one already in the queue is left to finish."""
+        for n, (pr, _) in pull_many(self.repository, numbers).items():
+            if (
+                not pr
+                or not pr["autoMergeRequest"]
+                or pr["isInMergeQueue"]
+                or pr["state"] != "OPEN"
+                or pr["baseRefName"] != self.branch
+                or pr["isCrossRepository"]
+                or (pr.get("headRepository") or {}).get("nameWithOwner") != self.repository
+            ):
+                continue
+            disable_auto_merge(pr["id"])
+            github.rest(
+                "POST",
+                f"repos/{self.repository}/issues/{n}/comments",
+                body=dict(body=TAKEOVER_NOTE.format(label=label)),
+            )
+            print(f"Took over #{n}: turned off its auto-merge so lit can batch it.", flush=True)
+
     def tick(self, label):
         """One pass of the batcher: pin every ready labelled PR, then move the intake as far as
         it can go without waiting. A scheduler (cron, a CI trigger) calls this again later."""
         numbers = self.labelled(label)
         if numbers:
+            self.take_over(numbers, label)
             try:
                 self.register(numbers)
             except Ineligible as reason:

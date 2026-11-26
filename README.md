@@ -144,7 +144,7 @@ concurrent-merge land batch-state/runs/BATCH/result.json --repo batch.git
 
 GitHub's merge queue tests a few groups at a time, so a repository that agents commit to all day lands far fewer PRs per hour than it receives. The batcher puts every ready PR into one batch PR, so one pass of the queue lands all of them.
 
-A PR is ready when it carries the label (default `lit-ready`), comes from a branch in the same repository, passes the required check on its current head, and has no unresolved review threads. Only people with triage access can add a label, and a PR from a fork is never batched. Each pass pins ready heads under `refs/heads/lit/ready/N`, builds one batch PR, enqueues it, and on a failure splits the batch to find the PR that broke it. All state lives in refs under `refs/heads/lit/`, so a pass that stops anywhere is resumed by the next one.
+A PR is ready when it carries the label (default `lit-ready`), comes from a branch in the same repository, passes the required check on its current head, and has no unresolved review threads. Only people with triage access can add a label, and a PR from a fork is never batched. The label hands the PR to lit: if its native auto-merge is on and GitHub has not queued it yet, the batcher turns auto-merge off, says so in a comment on the PR, and batches it. Remove the label to merge a PR on its own. Each pass pins ready heads under `refs/heads/lit/ready/N`, builds one batch PR, enqueues it, and on a failure splits the batch to find the PR that broke it. All state lives in refs under `refs/heads/lit/`, so a pass that stops anywhere is resumed by the next one.
 
 ```sh
 concurrent-merge intake OWNER/REPO --context "CI / tests" tick --label lit-ready

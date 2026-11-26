@@ -533,10 +533,12 @@ class BatcherTests(unittest.TestCase):
         rows = [{"number": 4, "pull_request": {}}, {"number": 5}, {"number": 7, "pull_request": {}}]
         with (
             patch("concurrent_merge.intake.github.rest_pages", return_value=iter(rows)) as pages,
+            patch.object(intake, "take_over") as take_over,
             patch.object(intake, "register") as register,
             patch.object(intake, "drain") as drain,
         ):
             intake.tick("lit-ready")
+        take_over.assert_called_once_with([4, 7], "lit-ready")
         self.assertEqual(pages.call_args.args[0], "repos/owner/repo/issues")
         self.assertEqual(pages.call_args.args[1]["labels"], "lit-ready")
         register.assert_called_once_with([4, 7])  # #5 is an issue, not a PR
@@ -546,11 +548,45 @@ class BatcherTests(unittest.TestCase):
         intake = Intake("owner/repo", "main", "trusted", Mock())
         with (
             patch("concurrent_merge.intake.github.rest_pages", return_value=iter([{"number": 4, "pull_request": {}}])),
+            patch.object(intake, "take_over"),
             patch.object(intake, "register", side_effect=Ineligible("None ready")),
             patch.object(intake, "drain") as drain,
         ):
             intake.tick("lit-ready")
         drain.assert_called_once_with(wait=False)
+
+    def test_take_over_turns_off_auto_merge_only_where_github_has_not_queued_yet(self):
+        intake = Intake("owner/repo", "main", "trusted", Mock())
+        base = dict(
+            id="node",
+            state="OPEN",
+            baseRefName="main",
+            isCrossRepository=False,
+            headRepository={"nameWithOwner": "owner/repo"},
+            isInMergeQueue=False,
+            autoMergeRequest={"enabledAt": "then"},
+        )
+        sources = {
+            1: (dict(base, id="armed"), None),
+            2: (dict(base, id="queued", isInMergeQueue=True), None),
+            3: (dict(base, id="plain", autoMergeRequest=None), None),
+            4: (dict(base, id="fork", isCrossRepository=True, headRepository={"nameWithOwner": "x/y"}), None),
+            5: (dict(base, id="other", baseRefName="release"), None),
+            6: (dict(base, id="closed", state="CLOSED"), None),
+            7: (None, None),
+        }
+        with (
+            patch("concurrent_merge.intake.pull_many", return_value=sources),
+            patch("concurrent_merge.intake.graphql") as mutation,
+            patch("concurrent_merge.intake.github.rest") as rest,
+        ):
+            intake.take_over(list(sources), "lit-ready")
+        mutation.assert_called_once()
+        self.assertIn("disablePullRequestAutoMerge", mutation.call_args.args[0])
+        self.assertEqual(mutation.call_args.args[1], dict(pr="armed"))
+        rest.assert_called_once()
+        self.assertEqual(rest.call_args.args[:2], ("POST", "repos/owner/repo/issues/1/comments"))
+        self.assertIn("lit-ready", rest.call_args.kwargs["body"]["body"])
 
     def test_drain_without_waiting_returns_while_a_batch_is_checked(self):
         intake = Intake("owner/repo", "main", "trusted", Mock())
