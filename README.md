@@ -21,11 +21,11 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## One binary
 
-lit is becoming one Go binary, `lit`, with nothing else to install ([#35](https://github.com/CakeRepository/lit/issues/35)). It takes the same commands and options as `concurrent-merge`. A command that has not moved to Go yet runs on the Python lit built into the binary, so for now the machine still needs Python 3.12 or later. Build it with Go 1.22 or later:
+lit is becoming one Rust binary, `lit`, with nothing else to install ([#35](https://github.com/CakeRepository/lit/issues/35)). It takes the same commands and options as `concurrent-merge`. A command that has not moved to Rust yet runs on the Python lit built into the binary, so for now the machine still needs Python 3.12 or later. The crate has no dependencies. Build it with Rust 1.80 or later:
 
 ```sh
-go build -o lit ./cmd/lit
-./lit version
+cargo build --release
+./target/release/lit version
 ```
 
 Each `v*` tag publishes a release with a binary for Linux, macOS and Windows on amd64 and arm64, and their SHA-256 sums in `SHA256SUMS`. Check a download before you run it:
@@ -34,7 +34,7 @@ Each `v*` tag publishes a release with a binary for Linux, macOS and Windows on 
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-`lit parity COMMAND ...` runs a command with the Python lit and with the Go lit, each in its own copy of the current folder, and fails if their exit codes, output, files or Git refs differ. Times, durations, test logs and the random part of a run folder may differ; batch commits are made at `SOURCE_DATE_EPOCH`, which parity pins, so their IDs must match. A command moves to Go only once its parity cases match. Until then parity runs Python twice, which checks that the command gives the same result from the same inputs.
+`lit parity COMMAND ...` runs a command with the Python lit and with the Rust lit, each in its own copy of the current folder, and fails if their exit codes, output, files or Git refs differ. Times, durations, test logs and the random part of a run folder may differ; batch commits are made at `SOURCE_DATE_EPOCH`, which parity pins, so their IDs must match. A command moves to Rust only once its parity cases match. Until then parity runs Python twice, which checks that the command gives the same result from the same inputs.
 
 The binary runs its Python from a private folder in the OS temp directory, never from the checkout, the action folder, `HOME` or `RUNNER_TEMP`. When it runs as root, as a GitHub container job does, it gives anything it created under the paths you name back to the owner of their folder, so the runner can still clean up. CI checks both with `scripts/root-hygiene.sh`.
 

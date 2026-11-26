@@ -7,37 +7,58 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  RUST_VERSION: "1.97.0"
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Each target builds on a runner of its own OS, so no cross linker is needed.
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, name: lit-linux-amd64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, name: lit-linux-arm64 }
+          - { os: macos-14, target: x86_64-apple-darwin, name: lit-darwin-amd64 }
+          - { os: macos-14, target: aarch64-apple-darwin, name: lit-darwin-arm64 }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc, name: lit-windows-amd64.exe }
+          - { os: windows-2025, target: aarch64-pc-windows-msvc, name: lit-windows-arm64.exe }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     steps:
       # Pin actions to a full commit SHA.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: go.mod
-          cache: false
-      - run: go test ./...
+      # The runner images ship rustup, so no setup action is needed; rustup's own installer covers one that doesn't.
+      - name: Rust
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target ${{ matrix.target }}
+          rustup default "$RUST_VERSION"
+      - run: cargo test --locked
       - name: Build
         env:
-          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.sha) }}
+          LIT_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.sha) }}
         run: |
           set -euo pipefail
+          cargo build --release --locked --target ${{ matrix.target }}
           mkdir dist
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            os=${target%/*} arch=${target#*/}
-            name="lit-$os-$arch"; [ "$os" = windows ] && name="$name.exe"
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -buildvcs=false \
-              -ldflags "-s -w -X main.version=$VERSION" -o "dist/$name" ./cmd/lit
-          done
-          (cd dist && sha256sum lit-* > SHA256SUMS && cat SHA256SUMS)
-          ./dist/lit-linux-amd64 version
-      - name: Root hygiene
-        run: scripts/root-hygiene.sh dist/lit-linux-amd64
+          ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
+          cp "target/${{ matrix.target }}/release/lit$ext" "dist/${{ matrix.name }}"
+      # Run what runs natively here: not arm64 Windows on the x64 runner, nor x64 macOS on the arm64 one.
+      - if: matrix.target != 'aarch64-pc-windows-msvc' && matrix.target != 'x86_64-apple-darwin'
+        run: ./dist/${{ matrix.name }} version
+      - if: startsWith(matrix.target, 'x86_64-unknown-linux')
+        name: Root hygiene
+        run: scripts/root-hygiene.sh dist/${{ matrix.name }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: lit
+          name: ${{ matrix.name }}
           path: dist/
   publish:
     if: github.ref_type == 'tag'
@@ -49,12 +70,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          name: lit
+          pattern: lit-*
+          merge-multiple: true
           path: dist
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          (cd dist && sha256sum lit-* > SHA256SUMS && cat SHA256SUMS)
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "lit $TAG" --verify-tag \
-            --notes "One binary per platform. Check a download against SHA256SUMS. Commands not yet in Go run on the Python lit inside the binary, so they still need Python 3.12 (#35)."
+            --notes "One binary per platform. Check a download against SHA256SUMS. Commands not yet in Rust run on the Python lit inside the binary, so they still need Python 3.12 (#35)."

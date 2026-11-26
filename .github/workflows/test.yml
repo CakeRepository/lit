@@ -18,27 +18,51 @@ jobs:
   binary:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      RUST_VERSION: "1.97.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: go.mod
-      - name: Format
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - run: go vet ./...
-      - run: go test ./...
-      - name: Build every release target
+      # The runner image ships rustup, so no setup action is needed.
+      - name: Rust
         run: |
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build -trimpath -o "$RUNNER_TEMP/lit-${target/\//-}" ./cmd/lit
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt \
+            --target x86_64-unknown-linux-musl,aarch64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin,x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+          rustup default "$RUST_VERSION"
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - name: Check every release target
+        run: |
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+            cargo clippy --release --locked --target "$target" -- -D warnings
           done
-          ls -l "$RUNNER_TEMP"/lit-*
+      - name: Build
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/lit "$RUNNER_TEMP/lit-linux-amd64"
+          "$RUNNER_TEMP/lit-linux-amd64" version
       # The same end-to-end merge checks the Python suite runs, against the binary.
       - name: End to end with the binary
         run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_end_to_end.py -v
       # lit as root in a container must leave nothing the runner cannot remove.
       - name: Root hygiene
         run: scripts/root-hygiene.sh "$RUNNER_TEMP/lit-linux-amd64"
+  binary-other-os:
+    # The binary's own tests on macOS and Windows, where it ships too.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      RUST_VERSION: "1.97.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+        shell: bash
+      - run: cargo test --locked
+        shell: bash
   action-hygiene:
     # Runs lit's actions the way FlowRMM's container jobs do: as root, over folders that belong to the
     # runner's user. Fails if lit leaves anything the runner's user couldn't delete, which is what broke
