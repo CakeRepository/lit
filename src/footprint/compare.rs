@@ -33,18 +33,22 @@ pub fn environment(ignore: &[Pattern]) -> BTreeMap<String, Value> {
         .collect()
 }
 pub fn environment_changes(v: &Value) -> Result<Vec<Value>> {
+    filtered_environment_changes(v, &[])
+}
+pub fn filtered_environment_changes(v: &Value, extra: &[Pattern]) -> Result<Vec<Value>> {
     let ignore = strings(v.field("ignored_environment")?)?
         .into_iter()
         .map(Pattern::new)
         .collect::<Vec<_>>();
-    let now = environment(&ignore);
+    let mut now = environment(&ignore);
+    now.retain(|k, _| !extra.iter().any(|p| p.matches(k)));
     let prior = v.field("environment")?.object()?;
     let mut names = now.keys().chain(prior.keys()).collect::<Vec<_>>();
     names.sort_unstable_by(|a, b| paths::compare(a, b));
     names.dedup();
     Ok(names
         .into_iter()
-        .filter(|s| now.get(*s) != prior.get(*s))
+        .filter(|s| !extra.iter().any(|p| p.matches(s)) && now.get(*s) != prior.get(*s))
         .map(|s| reason("environment", "name", s.as_str().into()))
         .collect())
 }

@@ -23,6 +23,8 @@ ruff_text_size = "=0.0.4"
 tempfile = "3"
 # Use the operating system's random source to sample independent cache audits.
 getrandom = "0.4"
+# Use the TLS dependency's SHA-512 for Python-compatible commit-seeded audit samples.
+ring = "0.17"
 # Proof identities include the compressed bytes. Statically link the same
 # DEFLATE implementation used by Python so large legacy payloads match too.
 flate2 = { version = "1.1.11", default-features = false, features = ["zlib"] }

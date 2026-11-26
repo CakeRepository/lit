@@ -156,6 +156,10 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
             dir: &dir,
             renames,
             ignore: &o.ignore,
+            unit_timings: matches!(
+                o.args.first().map(String::as_str),
+                Some("cached-units" | "dotnet-units")
+            ),
         };
         let mut files = n.tree().map_err(fail)?;
         if inputs.exists() {
@@ -335,6 +339,7 @@ struct Normalizer<'a> {
     dir: &'a Path,
     renames: HashMap<String, String>,
     ignore: &'a [String],
+    unit_timings: bool,
 }
 
 /// Replaces every ISO 8601 time (2026-11-26T00:07:45, with optional fraction
@@ -461,8 +466,27 @@ impl Normalizer<'_> {
                 Value::Array(items.into_iter().map(|x| self.json(x, key)).collect())
             }
             _ if self.ignored(key) => Value::String("<varies>".into()),
-            Value::Number(_) if key == "seconds" || key.ends_with("_seconds") => {
+            Value::Number(_)
+                if key == "seconds"
+                    || key.ends_with("_seconds")
+                    || (self.unit_timings
+                        && matches!(key, "seconds_ran" | "seconds_predicted_reusable")) =>
+            {
                 Value::String("<varies>".into())
+            }
+            Value::String(s) if self.unit_timings && s.starts_with("--coverage-dir=") => {
+                let p = Path::new(&s["--coverage-dir=".len()..]);
+                if let (Some(parent), Some(index)) = (
+                    p.parent()
+                        .and_then(Path::file_name)
+                        .and_then(|s| s.to_str()),
+                    p.file_name().and_then(|s| s.to_str()),
+                ) {
+                    if parent.starts_with("lit-coverage-") && index.parse::<usize>().is_ok() {
+                        return Value::String(format!("--coverage-dir=<coverage>/{index}"));
+                    }
+                }
+                Value::String(self.text(&s))
             }
             Value::String(s) => Value::String(self.text(&s)),
             other => other,

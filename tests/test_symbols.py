@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import shutil
@@ -164,7 +165,21 @@ class SymbolTests(unittest.TestCase):
             work, "unit", store, ["bun", "test", "{lcov}", "./{}"],
             names=["used.test.ts", "unused.test.ts"], log=os.devnull,
             allow_network=True, symbols=["*.ts"], **kw)
+        def native(mode, code=0):
+            receipt = self.root / "receipt.json"
+            done = subprocess.run(
+                [os.environ["LIT_BIN"], "cached-units", "--store", str(self.root / "native-store"),
+                 "--job", "unit", "--each", "bun test {lcov} ./{}", "--discover", "*.test.ts",
+                 "--symbols", "*.ts", "--allow-network", "--mode", mode, "--audit-rate", "0",
+                 "--log", str(self.root / "tests.log"), "--receipt", str(receipt)],
+                cwd=work, env=dict(os.environ, LIT_PYTHON=str(self.root / "missing-python")),
+                capture_output=True, text=True)
+            self.assertEqual(done.returncode, code, done.stdout + done.stderr)
+            return json.loads(receipt.read_text())
+
         self.assertEqual(run()["ran"], 2)
+        if os.environ.get("LIT_BIN"):
+            self.assertEqual(native("shadow")["ran"], 2)
         (work / "lib.ts").write_text(LIB_V1.replace("return b", "return b * 2"))
         git("commit", "-qam", "two")
         plan = run(mode="plan")
@@ -172,6 +187,9 @@ class SymbolTests(unittest.TestCase):
         self.assertEqual(plan["reusable_by_function"], 1)
         result = run(mode="enforce")
         self.assertEqual(result["failed"], ["unused.test.ts"])
+        if os.environ.get("LIT_BIN"):
+            self.assertEqual(native("plan")["reusable"], plan["reusable"])
+            self.assertEqual(native("enforce", code=1)["failed"], result["failed"])
 
 
 

@@ -2,6 +2,7 @@
 mod payload;
 pub(crate) mod sandbox;
 mod transport;
+pub(crate) use transport::load_book;
 
 use crate::args::Args;
 use crate::files;

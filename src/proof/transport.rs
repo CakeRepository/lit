@@ -93,7 +93,7 @@ pub fn push(proof: &Path, repo: &Repo, args: &Args<'_>) -> Result<String> {
     }
     Ok(reference)
 }
-fn load_book(path: &Path) -> Value {
+pub(crate) fn load_book(path: &Path) -> Value {
     if let Ok(book) = paths::read(path) {
         if field(&book, "kind") == Some("lit-audit-book") {
             return book;

@@ -30,6 +30,7 @@ mod pyfallback;
 mod readers;
 mod reports;
 mod run;
+mod sampling;
 mod sha256;
 mod snapshot;
 mod store;
@@ -52,6 +53,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("score-bun", reports::score_command),
     ("cache-report", cache_report::command),
     ("cached-run", footprint::cache::command),
+    ("cached-units", footprint::unit_store::command),
     ("reuse", footprint::reuse),
     ("select", footprint::select),
     ("trace", footprint::trace_cli::trace),
