@@ -51,6 +51,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("agree", agree::command),
     ("blame", reports::blame_command),
     ("score-bun", reports::score_command),
+    ("shadow", footprint::shadow::command),
     ("cache-report", cache_report::command),
     ("cached-run", footprint::cache::command),
     ("cached-units", footprint::unit_store::command),

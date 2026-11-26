@@ -256,6 +256,13 @@ class EndToEnd(unittest.TestCase):
                                   "--test", "git", "diff", "--exit-code"], 0)]:
             result = s.lit("parity", *flags, *extra)
             self.assertIn(f"matches between Python and Rust (exit {expected})", result.stdout)
+        s.env["LIT_PYTHON"] = str(s.root / "unavailable")
+        done = s.lit(*flags, "--shadow-store", "empty-store", "--shadow-job", "tests",
+                     "--test", "git", "diff", "--exit-code")
+        receipt = Path(done.stdout.strip().splitlines()[-1])
+        shadow = json.loads((s.root / receipt.parent / "shadow.json").read_text())
+        self.assertEqual(shadow["outcome"]["passed"], [1, 2])
+        self.assertEqual(shadow["decision"]["unrun"], [1, 2])
 
     @unittest.skipUnless(os.environ.get("LIT_BIN"), "requires the binary parity harness")
     def test_proposes_only_the_tested_topic_and_recovers_the_draft(self):

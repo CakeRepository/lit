@@ -6,6 +6,7 @@ pub(crate) mod dotnet;
 mod events;
 mod glob;
 mod record;
+pub(crate) mod shadow;
 mod summary;
 mod symbols;
 pub(crate) mod trace_cli;
