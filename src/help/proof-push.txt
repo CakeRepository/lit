@@ -1,0 +1,12 @@
+usage: concurrent-merge proof push [-h] --remote REMOTE [--repo REPO]
+                                   [--prefix PREFIX]
+                                   proof
+
+positional arguments:
+  proof
+
+options:
+  -h, --help       show this help message and exit
+  --remote REMOTE
+  --repo REPO      Any local Git repository to build the push in
+  --prefix PREFIX

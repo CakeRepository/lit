@@ -15,12 +15,14 @@ mod git;
 mod github;
 mod handback;
 mod json;
+mod json_paths;
 mod land;
 mod merge;
 mod merge_tree;
 mod parity;
 mod parity_land;
 mod preview;
+mod proof;
 mod propose;
 mod pyfallback;
 mod readers;
@@ -49,6 +51,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("cache-report", cache_report::command),
     ("collect", collect::command),
     ("land", land::command),
+    ("proof", proof::command),
     ("propose", propose::command),
     ("preview", preview::command),
 ];

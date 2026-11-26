@@ -2,106 +2,12 @@
 use crate::args::Args;
 use crate::files;
 use crate::git::Repo;
-use crate::json::{self, object, Value};
+use crate::json::{object, Value};
+use crate::json_paths::{path_key, read, render};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 type Result<T> = std::result::Result<T, String>;
 
-// JSON footprints can name Git paths containing arbitrary bytes via Python's
-// surrogateescape. Preserve escaped surrogates even in object keys while
-// working with the regular JSON parser's Unicode strings.
-const MARK: char = '\u{fdd0}';
-fn mark_surrogate(out: &mut String, unit: u32) {
-    out.push(MARK);
-    out.push(char::from_u32(0xe000 + unit - 0xd800).unwrap());
-}
-fn mark_char(out: &mut String, c: char) {
-    if c == MARK {
-        out.push(MARK);
-    }
-    out.push(c);
-}
-fn path_key(path: &[u8]) -> String {
-    let mut s = String::new();
-    for chunk in path.utf8_chunks() {
-        for c in chunk.valid().chars() {
-            mark_char(&mut s, c);
-        }
-        for b in chunk.invalid() {
-            mark_surrogate(&mut s, 0xdc00 + u32::from(*b));
-        }
-    }
-    s
-}
-fn unicode_escape(text: &str) -> Option<u32> {
-    let h = text.strip_prefix("\\u")?.get(..4)?;
-    h.bytes()
-        .all(|c| c.is_ascii_hexdigit())
-        .then(|| u32::from_str_radix(h, 16).ok())
-        .flatten()
-}
-fn read(path: &str) -> Result<Value> {
-    let bytes = files::read(Path::new(path))?;
-    let mut text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
-    let mut escaped = String::new();
-    while !text.is_empty() {
-        if let Some(unit) = unicode_escape(text) {
-            text = &text[6..];
-            if (0xd800..0xdc00).contains(&unit) {
-                if let Some(low @ 0xdc00..=0xdfff) = unicode_escape(text) {
-                    text = &text[6..];
-                    let c =
-                        char::from_u32(0x10000 + ((unit - 0xd800) << 10) + (low - 0xdc00)).unwrap();
-                    mark_char(&mut escaped, c);
-                    continue;
-                }
-            }
-            if (0xd800..0xe000).contains(&unit) {
-                mark_surrogate(&mut escaped, unit);
-            } else if unit == MARK as u32 {
-                mark_char(&mut escaped, MARK);
-            } else {
-                use std::fmt::Write;
-                write!(escaped, "\\u{unit:04x}").unwrap();
-            }
-        } else {
-            let mut chars = text.chars();
-            let c = chars.next().unwrap();
-            mark_char(&mut escaped, c);
-            if c == '\\' {
-                if let Some(next) = chars.next() {
-                    mark_char(&mut escaped, next);
-                }
-            }
-            text = chars.as_str();
-        }
-    }
-    json::parse(&escaped)
-}
-fn render(value: &Value) -> String {
-    use std::fmt::Write;
-    let encoded = json::pretty(value);
-    let mut raw = String::new();
-    let mut chars = encoded.chars();
-    while let Some(c) = chars.next() {
-        if c != MARK {
-            raw.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some(MARK) => raw.push(MARK),
-            Some(c @ '\u{e000}'..='\u{e7ff}') => {
-                write!(raw, "\\u{:04x}", 0xd800 + (c as u32 - 0xe000)).unwrap()
-            }
-            Some(other) => {
-                raw.push(MARK);
-                raw.push(other);
-            }
-            None => raw.push(MARK),
-        }
-    }
-    raw
-}
 fn strings(v: &Value) -> Result<BTreeSet<String>> {
     match v {
         Value::Object(map) => Ok(map.keys().cloned().collect()),
@@ -205,7 +111,7 @@ fn blame(args: &Args<'_>) -> Result<Value> {
     }
     let mut failed = BTreeMap::new();
     for file in &args.positional {
-        match read(file)?.get("failed_reads") {
+        match read(Path::new(file))?.get("failed_reads") {
             Some(Value::Object(units)) => failed.extend(units.clone()),
             Some(v) if v.truthy() => {
                 return Err("Expected failed_reads to contain unit footprints".into())
@@ -229,7 +135,7 @@ fn bun_header(line: &str) -> Option<&str> {
     matches!(ext, "js" | "jsx" | "ts" | "tsx").then_some(path.strip_prefix("./").unwrap_or(path))
 }
 fn score(args: &Args<'_>) -> Result<Value> {
-    let plan = read(args.positional[0])?;
+    let plan = read(Path::new(args.positional[0]))?;
     let reusable = strings(plan.field("reusable")?)?;
     let mut failed = BTreeSet::new();
     for log in args.all("--log") {

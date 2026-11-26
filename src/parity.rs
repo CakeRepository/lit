@@ -92,6 +92,11 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
     } else {
         None
     };
+    let proof = if o.args.first().is_some_and(|s| s == "proof") {
+        crate::proof::sandbox::Sandbox::prepare(&o.source, &work, &o.args).map_err(fail)?
+    } else {
+        None
+    };
     let mut sides = Vec::new();
     for (name, impl_) in [("python", "python"), ("rust", "rust")] {
         let dir = work.join(name);
@@ -100,6 +105,22 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         let target = work.join(format!("{name}-landing.git"));
         if let Some(landing) = &landing {
             landing.configure(&mut cmd, &dir, &target).map_err(fail)?;
+        } else if let Some(proof) = &proof {
+            proof.configure(&mut cmd, &target).map_err(fail)?;
+            let date = format!("@{} +0000", o.epoch);
+            cmd.env(
+                "LIT_PARITY_PROOF_TIME",
+                o.epoch
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|s| jiff::Timestamp::from_second(s).ok())
+                    .ok_or_else(|| fail("Invalid parity epoch".into()))?
+                    .to_string()
+                    .replace('Z', "+00:00"),
+            );
+            cmd.env("LIT_PARITY_BOOK_DATE", &date)
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date);
         } else {
             cmd.args(&o.args);
         }
@@ -116,7 +137,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
             ignore: &o.ignore,
         };
         let mut files = n.tree().map_err(fail)?;
-        if landing.is_some() {
+        if landing.is_some() || proof.as_ref().is_some_and(|p| p.redirected()) {
             let draft = target.join("lit-draft.json");
             if draft.exists() {
                 let raw = fs::read_to_string(draft).map_err(|e| fail(e.to_string()))?;
@@ -446,14 +467,23 @@ impl Normalizer<'_> {
                 return Ok(());
             }
             let data = fs::read(path).map_err(|e| e.to_string())?;
-            let text = String::from_utf8_lossy(&data);
+            let text = match std::str::from_utf8(&data) {
+                Ok(text) if !text.contains('\0') => text,
+                _ => {
+                    files.insert(
+                        rel.to_owned(),
+                        format!("binary SHA-256 {}", crate::sha256::hex(&data)),
+                    );
+                    return Ok(());
+                }
+            };
             if rel.ends_with(".json") {
-                if let Ok(v) = json::parse(&text) {
+                if let Ok(v) = json::parse(text) {
                     files.insert(rel.to_string(), json::pretty(&self.json(v, "")));
                     return Ok(());
                 }
             }
-            files.insert(rel.to_string(), self.text(&text));
+            files.insert(rel.to_string(), self.text(text));
         }
         Ok(())
     }

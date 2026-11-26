@@ -1,0 +1,26 @@
+usage: concurrent-merge proof take [-h] --remote REMOTE [--prefix PREFIX]
+                                   --repository REPOSITORY --commit COMMIT
+                                   (--allowed-signers ALLOWED_SIGNERS | --signers-at REV)
+                                   [--repo REPO] [--image IMAGE]
+                                   [--max-age-hours MAX_AGE_HOURS]
+                                   [--revoked REVOKED] --into INTO
+                                   [--quorum QUORUM] [--audit-book AUDIT_BOOK]
+
+options:
+  -h, --help            show this help message and exit
+  --remote REMOTE
+  --prefix PREFIX
+  --repository REPOSITORY
+  --commit COMMIT       Commit a proof may be for (repeat)
+  --allowed-signers ALLOWED_SIGNERS
+  --signers-at REV      Read .lit/allowed_signers at REV (the target branch)
+                        from --repo
+  --repo REPO
+  --image IMAGE         Require proofs made in this container image
+  --max-age-hours MAX_AGE_HOURS
+  --revoked REVOKED     File of revoked key fingerprints, one per line
+  --into INTO           Store for cached-units --proof-store
+  --quorum QUORUM       Different signers who must report a file alike before
+                        it counts
+  --audit-book AUDIT_BOOK
+                        Skip proofs a signer made before failing an audit

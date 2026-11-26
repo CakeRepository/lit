@@ -1,0 +1,13 @@
+usage: concurrent-merge proof pack [-h] --store STORE --job JOB --repository
+                                   REPOSITORY --image IMAGE
+                                   [--workdir WORKDIR] --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --store STORE
+  --job JOB             Job whose records go in (repeat)
+  --repository REPOSITORY
+                        owner/name the commit belongs to
+  --image IMAGE         Container image the tests ran in, with its digest
+  --workdir WORKDIR     Checkout of the tested commit
+  --out OUT

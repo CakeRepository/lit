@@ -433,5 +433,91 @@ class EndToEnd(unittest.TestCase):
                 s.lit(*collect)
 
 
+
+@unittest.skipUnless(os.environ.get("LIT_BIN") and shutil.which("ssh-keygen"), "native signed proof parity")
+class SignedProofCLI(unittest.TestCase):
+    def test_interoperable_signatures_quorum_book_and_leased_pushes(self):
+        import hashlib
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            work.mkdir()
+            git(work, "init", "-q", "-b", "main")
+            remote = str(root / "remote.git")
+            git(root, "init", "-q", "--bare", "-b", "main", remote)
+            git(work, "remote", "add", "origin", remote)
+            signers = work / ".lit" / "allowed_signers"
+            signers.parent.mkdir()
+            for who in ("one", "two"):
+                subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(work / who)], check=True)
+            signers.write_text("".join(f'{who} namespaces="lit-proof" {(work / (who + ".pub")).read_text()}'
+                                       for who in ("one", "two")), encoding="utf8")
+            git(work, "add", ".lit")
+            git(work, "commit", "-qm", "trusted signers")
+            commit = git(work, "rev-parse", "HEAD")
+            tree = git(work, "rev-parse", "HEAD^{tree}")
+            units = work / "store" / "tests" / "units"
+            units.mkdir(parents=True)
+            # Cross a DEFLATE block boundary. Small records can produce
+            # identical bytes with compressors that diverge on real ledgers.
+            tracked = {f"src/{i}.py": ["100644", hashlib.sha256(str(i).encode()).hexdigest()] for i in range(900)}
+            bundle = dict(kind="lit-unit-footprints", commit=commit, tree=tree, tracked=tracked,
+                          units={"tests/café": dict(exit_code=0, incomplete=[], tracked=list(tracked), seconds=1.25)})
+            (units / "pass.json").write_text(json.dumps(bundle), encoding="utf8")
+            (units / "stale.json").write_text(json.dumps(dict(bundle, commit="b"*40)), encoding="utf8")
+
+            def command(*args, code=0, compare=True):
+                if compare:
+                    before = git(work, "ls-remote", "origin")
+                    result = lit(work, {}, "parity", "proof", *args)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(f"(exit {code})", result.stdout)
+                    self.assertEqual(git(work, "ls-remote", "origin"), before)
+                result = lit(work, {"LIT_PYTHON": str(root / "no-python")}, "proof", *args)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                return result.stdout.strip()
+
+            proof = "proof.json.gz"
+            command("pack", "--store", "store", "--job", "tests", "--repository", "o/r",
+                    "--image", "image", "--out", proof)
+            common = ["--repository", "o/r", "--commit", commit, "--image", "image", "--signers-at", "HEAD"]
+            for who in ("one", "two"):
+                command("sign", proof, "--key", who)
+                self.assertIn("Took 1 records", command("verify", proof, *common, "--into", "local"))
+                command("verify", proof, *common, "--repository", "other/repo", "--into", "unused", code=1)
+                command("verify", proof, *common, "--max-age-hours", "-1", "--into", "expired", code=1)
+                command("verify", proof, *common, "--max-age-hours", "nan", "--into", "invalid", code=2)
+                fingerprint = subprocess.check_output(["ssh-keygen", "-lf", str(work / (who + ".pub"))], text=True).split()[1]
+                (work / "revoked").write_text(fingerprint)
+                command("verify", proof, *common, "--revoked", "revoked", "--into", "revoked-store", code=1)
+                reference = command("push", proof, "--remote", "origin")
+                self.assertIn(commit, reference)
+                self.assertEqual(command("push", proof, "--remote", "origin"), reference)
+                if who == "one":
+                    command("take", "--remote", "origin", *common, "--quorum", "2", "--into", "waiting")
+                    self.assertFalse((work / "waiting/tests/units").exists())
+            sig = work / (proof + ".sig")
+            signed = sig.read_bytes()
+            command("sign", proof, "--key", "missing-key", code=2)
+            self.assertEqual(sig.read_bytes(), signed)
+            self.assertIn("Took 1 tests files", command("take", "--remote", "origin", *common, "--quorum", "2", "--into", "verified"))
+            index = json.loads((work / "verified/tests/proof-signers.json").read_text())
+            self.assertEqual(index, {"tests/café": ["one", "two"]})
+            (work / "reset.json").write_text(json.dumps(dict(kind="lit-audit-book", signers={
+                "one": {"reset": "2099-01-01T00:00:00+00:00"}})))
+            command("take", "--remote", "origin", *common, "--quorum", "2", "--audit-book", "reset.json", "--into", "after-reset")
+            self.assertFalse((work / "after-reset/tests/units").exists())
+            command("book-pull", "book.json", "--remote", "origin")
+            command("book-push", "book.json", "--remote", "origin")
+            command("book-pull", "fresh.json", "--remote", "origin")
+            self.assertEqual(json.loads((work / "book.json").read_text()), json.loads((work / "fresh.json").read_text()))
+            original = (work / proof).read_bytes()
+            (work / proof).write_bytes(original + b"changed")
+            self.assertIn("signature does not match", command("verify", proof, *common, "--into", "bad", code=1))
+            self.assertFalse((work / "bad").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

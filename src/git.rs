@@ -32,7 +32,7 @@ impl Repo {
         self.output_env(args, input, &[])
     }
 
-    fn output_env<S: AsRef<OsStr>>(
+    pub(crate) fn output_env<S: AsRef<OsStr>>(
         &self,
         args: &[S],
         input: Option<&[u8]>,

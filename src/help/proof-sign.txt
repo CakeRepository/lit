@@ -1,0 +1,8 @@
+usage: concurrent-merge proof sign [-h] --key KEY proof
+
+positional arguments:
+  proof
+
+options:
+  -h, --help  show this help message and exit
+  --key KEY   Key file, or the public key of an agent-held key
