@@ -136,7 +136,10 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         sides.push(Side {
             name,
             code: exit_code(&out.status),
-            stdout: n.stream(&out.stdout),
+            stdout: match json::parse(&String::from_utf8_lossy(&out.stdout)) {
+                Ok(v @ (Value::Object(_) | Value::Array(_))) => json::pretty(&n.json(v, "")),
+                _ => n.stream(&out.stdout),
+            },
             stderr: n.stream(&out.stderr),
             files,
         });

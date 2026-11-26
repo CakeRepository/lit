@@ -1,0 +1,12 @@
+usage: concurrent-merge preview [-h] [--branch BRANCH] --repo REPO --out OUT
+                                repository numbers [numbers ...]
+
+positional arguments:
+  repository
+  numbers
+
+options:
+  -h, --help       show this help message and exit
+  --branch BRANCH
+  --repo REPO
+  --out OUT

@@ -24,7 +24,17 @@ impl Repo {
     }
 
     pub fn output(&self, args: &[&str], input: Option<&[u8]>) -> Result<Output, String> {
+        self.output_env(args, input, &[])
+    }
+
+    fn output_env(
+        &self,
+        args: &[&str],
+        input: Option<&[u8]>,
+        env: &[(&str, &str)],
+    ) -> Result<Output, String> {
         let mut command = Command::new("git");
+        command.envs(env.iter().copied());
         for dir in [&self.path, &self.path.join(".git")] {
             command
                 .arg("-c")
@@ -63,7 +73,10 @@ impl Repo {
     }
 
     pub fn text(&self, args: &[&str], input: Option<&[u8]>) -> Result<String, String> {
-        let output = self.output(args, input)?;
+        Self::checked(args, self.output(args, input)?)
+    }
+
+    fn checked(args: &[&str], output: Output) -> Result<String, String> {
         if !output.status.success() {
             return Err(format!(
                 "git {}: {}",
@@ -75,5 +88,44 @@ impl Repo {
             .map_err(|e| e.to_string())?
             .trim()
             .into())
+    }
+
+    pub fn commit(
+        &self,
+        tree: &str,
+        parent: &str,
+        head: &str,
+        message: &str,
+        timestamp: i64,
+    ) -> Result<String, String> {
+        let mut args = vec!["commit-tree", tree, "-p", parent];
+        if head != parent {
+            args.extend(["-p", head]);
+        }
+        let date = format!("@{timestamp} +0000");
+        let env = [
+            ("GIT_AUTHOR_NAME", "Concurrent Merge"),
+            ("GIT_COMMITTER_NAME", "Concurrent Merge"),
+            ("GIT_AUTHOR_EMAIL", "batch@localhost"),
+            ("GIT_COMMITTER_EMAIL", "batch@localhost"),
+            ("GIT_AUTHOR_DATE", date.as_str()),
+            ("GIT_COMMITTER_DATE", date.as_str()),
+        ];
+        Self::checked(
+            &args,
+            self.output_env(&args, Some(message.as_bytes()), &env)?,
+        )
+    }
+
+    pub fn ancestor(&self, before: &str, after: &str) -> Result<bool, String> {
+        match self
+            .output(&["merge-base", "--is-ancestor", before, after], None)?
+            .status
+            .code()
+        {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err("Missing commit in archive".into()),
+        }
     }
 }

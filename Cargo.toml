@@ -13,6 +13,8 @@ publish = false
 ureq = { version = "3.5.2", default-features = false, features = ["rustls", "platform-verifier"] }
 # Authors can be extracted using capture groups, lookaround and backreferences.
 fancy-regex = "0.20.2"
+# UTC timestamps in portable receipts. No timezone database is bundled.
+jiff = { version = "1.0.3", default-features = false, features = ["std"] }
 
 [profile.release]
 lto = true
