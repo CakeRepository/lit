@@ -282,3 +282,131 @@ fn agree_records_exact_bytes_without_python_and_matches_the_reference() {
     parity(&args(&key, who), 2);
     fs::remove_dir_all(work).unwrap();
 }
+
+#[test]
+fn native_failure_reports_match_reference_with_repeated_inputs() {
+    let work = scratch_batch("failure-reports");
+    fs::write(
+        work.join("reads.json"),
+        r#"{"failed_reads":{"A":{"tracked":["b.txt"]},"B":{"listings":[""]}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        work.join("other.json"),
+        r#"{"failed_reads":{"A":{"absent":["b.txt"]},"C":{"incomplete":["missed reads"]}}}"#,
+    )
+    .unwrap();
+    fs::write(work.join("plan.json"),r#"{"commit":"abc","units":3,"reusable":["one.ctsx","one.ctsx","src/a.ts"],"seconds_predicted_reusable":12.5,"first_reasons":{"x":2}}"#).unwrap();
+    fs::write(
+        work.join("first.log"),
+        "./one.ctsx:\n(pass) yes\n# Unhandled error\n./src/a.ts:\n(pass) yes\n",
+    )
+    .unwrap();
+    fs::write(
+        work.join("second.log"),
+        "./suite.jsx:\nerror: no\nsuite.jsx:\n(fail) still broken\n",
+    )
+    .unwrap();
+    let blame = [
+        "blame",
+        "reads.json",
+        "other.json",
+        "--change",
+        "PR=main..pr",
+        "--workdir",
+        "src",
+        "--out",
+        "result/blame.json",
+    ];
+    let score = [
+        "score-bun",
+        "plan.json",
+        "--log",
+        "first.log",
+        "--log",
+        "second.log",
+        "--out",
+        "score.json",
+    ];
+    for argv in [
+        &blame[..],
+        &score[..],
+        &["blame", "reads.json", "--change", "bad"][..],
+    ] {
+        let o = lit()
+            .arg("parity")
+            .args(argv)
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    for argv in [&blame[..], &score[..]] {
+        let o = lit()
+            .args(argv)
+            .env("LIT_PYTHON", work.join("missing"))
+            .env_remove("LIT_IMPL")
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        if argv[0] == "blame" {
+            assert_eq!(String::from_utf8(o.stdout).unwrap().lines().count(), 1);
+        }
+    }
+    let report = fs::read_to_string(work.join("score.json")).unwrap();
+    assert!(report.contains("one.ctsx") && report.contains("\"failed_in_run\": 2"));
+    fs::remove_dir_all(work).unwrap();
+}
+
+#[test]
+fn blame_preserves_distinct_non_unicode_git_paths() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let work = scratch_batch("blame-paths");
+    let repo = work.join("batch.git");
+    let parent = git(&repo, &["rev-parse", "pr"]);
+    // A Git tree can contain names the host's filesystem cannot check out.
+    let mut import = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(&repo)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stream = format!("commit refs/heads/pr\ncommitter t <t@example.com> 1700000000 +0000\ndata 4\npath\nfrom {parent}\nM 100644 inline \"\\377\"\ndata 3\nnew\n\ndone\n");
+    import
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stream.as_bytes())
+        .unwrap();
+    assert!(import.wait().unwrap().success());
+    fs::write(work.join("reads.json"),r#"{"failed_reads":{"bad\udcff":{"tracked":["\udcff"]},"other\udcfe":{"tracked":["\udcfe"]},"literal":{"tracked":["\ufdd0\ue4ff"]}}}"#).unwrap();
+    let o = lit()
+        .args([
+            "parity",
+            "blame",
+            "reads.json",
+            "--change",
+            "PR=pr~..pr",
+            "--workdir",
+            "batch.git",
+            "--out",
+            "verdict.json",
+        ])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    fs::remove_dir_all(work).unwrap();
+}

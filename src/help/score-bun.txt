@@ -1,0 +1,9 @@
+usage: concurrent-merge score-bun [-h] --log LOG [--out OUT] plan
+
+positional arguments:
+  plan        Receipt of cached-units --mode plan
+
+options:
+  -h, --help  show this help message and exit
+  --log LOG
+  --out OUT

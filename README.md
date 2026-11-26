@@ -21,7 +21,7 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## One binary
 
-lit is becoming one Rust binary, `lit`, with nothing else to install ([#35](https://github.com/CakeRepository/lit/issues/35)). It takes the same commands and options as `concurrent-merge`. A command that has not moved to Rust yet runs on the Python lit built into the binary, so for now the machine still needs Python 3.12 or later. The native GitHub client uses ureq for HTTPS and fancy-regex for author capture patterns. `collect`, `run`, `agree`, `land`, `propose`, and `preview` use Rust. The Python source reader uses Ruff’s parser. During the reader migration `run` uses the embedded implementation to resolve JavaScript/TypeScript, C#, and PowerShell files that need a structural merge. `--shadow-store` uses the embedded Frontier implementation. Build lit with Rust 1.94 or later:
+lit is becoming one Rust binary, `lit`, with nothing else to install ([#35](https://github.com/CakeRepository/lit/issues/35)). It takes the same commands and options as `concurrent-merge`. A command that has not moved to Rust yet runs on the Python lit built into the binary, so for now the machine still needs Python 3.12 or later. The native GitHub client uses ureq for HTTPS and fancy-regex for author capture patterns. `collect`, `run`, `agree`, `land`, `propose`, `preview`, `blame`, and `score-bun` use Rust. The Python source reader uses Ruff’s parser. During the reader migration `run` uses the embedded implementation to resolve JavaScript/TypeScript and C# files that need a structural merge. `--shadow-store` uses the embedded Frontier implementation. Build lit with Rust 1.94 or later:
 
 ```sh
 cargo build --release
