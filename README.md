@@ -2,6 +2,8 @@
 
 Test several reviewed PRs in one checkout and land the tested commit with one Git ref update. The engine works with ordinary Git objects. Each PR keeps its original head as a parent and has trailers identifying its number and author.
 
+What lit has and hasn't proven on real PRs so far, with the numbers, is in [docs/proof-status.md](docs/proof-status.md).
+
 ## For agents
 
 lit is built to be driven by coding agents. Many agents can open PRs at once; lit tests them together on one runner, lands the passing ones as ordinary Git commits, and hands each failure or overlap back to the change that caused it.
