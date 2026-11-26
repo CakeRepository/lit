@@ -6,6 +6,9 @@ its reader is unsure of, keeps Git's line merge, and a real overlap goes back
 to the change that caused it.
 """
 
+from pathlib import Path
+import subprocess
+
 from . import readers
 
 
@@ -176,6 +179,15 @@ def tree_merge(parts):
 
 
 def outline_merge(path, blobs):
+    suffix = Path(path).suffix.lower()
+    if readers.native_program and suffix in readers.native_suffixes:
+        stream = b"".join(len(blob).to_bytes(8, "big") + blob for blob in blobs)
+        merged = subprocess.run([readers.native_program, "--internal-merge-file", suffix],
+                                input=stream, stdout=subprocess.PIPE)
+        if merged.returncode == 1:
+            return None
+        merged.check_returncode()
+        return merged.stdout
     trees = [readers.outline(path, blob) for blob in blobs]
     if None in trees:
         return None

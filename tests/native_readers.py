@@ -43,6 +43,8 @@ def suite(binary):
             tests.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(cls))
     if not suffixes or exercised != set(suffixes):
         raise ValueError(f"Missing native conformance suite for {set(suffixes) - exercised}")
+    if ".py" in suffixes:
+        tests.addTests(unittest.defaultTestLoader.loadTestsFromName("test_structure"))
     return tests
 
 

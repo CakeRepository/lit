@@ -2,6 +2,7 @@
 mod json_reader;
 mod markdown;
 mod python;
+pub(crate) mod structure;
 mod yaml;
 
 use std::fmt::Write;
