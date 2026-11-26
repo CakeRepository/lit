@@ -377,7 +377,7 @@ class Engine:
             vote = self.vote_path(key, author)
             if not vote.exists():
                 return None
-            votes.append(json.loads(vote.read_text())["blob"])
+            votes.append(json.loads(vote.read_text(encoding="utf8"))["blob"])
         if len(set(votes)) != 1:
             return None
         if self.repo.out("cat-file", "-t", votes[0]) != "blob":
@@ -395,7 +395,7 @@ class Engine:
     def agree(self, key, author, content):
         if not re.fullmatch("[0-9a-f]{64}", key):
             raise ValueError("Invalid conflict id")
-        issue = json.loads((self.state / "conflicts" / f"{key}.json").read_text())
+        issue = json.loads((self.state / "conflicts" / f"{key}.json").read_text(encoding="utf8"))
         if not issue["mode"] or author not in issue["authors"]:
             raise ValueError(
                 "This vote requires a listed author and a regular file content conflict"

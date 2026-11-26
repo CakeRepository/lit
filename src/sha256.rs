@@ -107,7 +107,6 @@ impl Sha256 {
     }
 }
 
-#[cfg(test)]
 pub fn hex(data: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(data);
