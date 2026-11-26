@@ -2,7 +2,7 @@
 name = "lit"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.94"
 license = "Apache-2.0"
 description = "lit lands many concurrent changes at once: one binary, no runtime to install"
 repository = "https://github.com/CakeRepository/lit"
@@ -15,6 +15,11 @@ ureq = { version = "3.5.2", default-features = false, features = ["rustls", "pla
 fancy-regex = "0.20.2"
 # UTC timestamps in portable receipts. No timezone database is bundled.
 jiff = { version = "1.0.3", default-features = false, features = ["std"] }
+encoding_rs = "0.8"
+# Ruff parses PEP 701 f-strings and reports byte ranges without a Python runtime.
+ruff_python_parser = "=0.0.4"
+ruff_python_ast = "=0.0.4"
+ruff_text_size = "=0.0.4"
 
 [profile.release]
 lto = true

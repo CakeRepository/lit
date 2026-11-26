@@ -1,6 +1,7 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
 mod json_reader;
 mod markdown;
+mod python;
 mod yaml;
 
 use std::fmt::Write;
@@ -41,11 +42,15 @@ fn write_nodes(nodes: &[Node], out: &mut String) {
     out.push(']');
 }
 
-type Reader = fn(&str) -> Option<Vec<Node>>;
+enum Reader {
+    Text(fn(&str) -> Option<Vec<Node>>),
+    Encoded(fn(&[u8]) -> Option<Vec<Node>>),
+}
 const READERS: &[(&[&str], Reader)] = &[
-    (&[".md", ".markdown"], markdown::outline),
-    (&[".json"], json_reader::outline),
-    (&[".yaml", ".yml"], yaml::outline),
+    (&[".md", ".markdown"], Reader::Text(markdown::outline)),
+    (&[".json"], Reader::Text(json_reader::outline)),
+    (&[".yaml", ".yml"], Reader::Text(yaml::outline)),
+    (&[".py", ".pyi", ".pyw"], Reader::Encoded(python::outline)),
 ];
 
 pub fn suffixes() -> Vec<&'static str> {
@@ -60,7 +65,10 @@ fn outline(suffix: &str, bytes: &[u8]) -> Option<Vec<Node>> {
     if bytes.contains(&0) {
         return None;
     }
-    reader(std::str::from_utf8(bytes).ok()?)
+    match reader {
+        Reader::Text(read) => read(std::str::from_utf8(bytes).ok()?),
+        Reader::Encoded(read) => read(bytes),
+    }
 }
 
 pub fn command(suffix: &str) -> i32 {
