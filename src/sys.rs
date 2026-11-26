@@ -6,7 +6,6 @@ mod unix {
 
     extern "C" {
         fn geteuid() -> u32;
-        fn getuid() -> u32;
         fn kill(pid: i32, sig: i32) -> i32;
         fn signal(sig: i32, handler: usize) -> usize;
     }
@@ -17,11 +16,6 @@ mod unix {
     pub fn euid() -> u32 {
         // SAFETY: geteuid takes no arguments and cannot fail.
         unsafe { geteuid() }
-    }
-
-    pub fn uid() -> u32 {
-        // SAFETY: getuid takes no arguments and cannot fail.
-        unsafe { getuid() }
     }
 
     static CHILD: AtomicI32 = AtomicI32::new(0);

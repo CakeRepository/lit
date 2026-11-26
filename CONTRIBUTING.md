@@ -13,7 +13,9 @@ When lit meets a code file it has no reader for, it says so in its output and in
 
 ### What a reader is
 
-A reader is one Python module in `concurrent_merge/readers/`. lit finds it on its own; you don't register it anywhere. It uses only the Python standard library and calls no outside program.
+Implement the reader under `src/readers/` and register its name, suffixes and outline function in `LANGUAGES` in `src/readers/mod.rs`. Return `Option<Vec<Node>>`. Each node has a key, byte offsets and children. The Markdown reader is a small example.
+
+Add the matching reference module under `concurrent_merge/readers/` for parity. The Python harness discovers this module by its name and suffixes:
 
 ```python
 NAME = "go"                 # shown as the merge method, "go-outline"
@@ -63,6 +65,8 @@ The suite checks that the reader is registered, that every outline keeps the rul
 
 ```
 python3 -m unittest discover -s tests
+cargo build --locked
+LIT_BIN="$PWD/target/debug/lit" python3 -B tests/native_readers.py
 ```
 
 ## How pull requests land

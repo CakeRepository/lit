@@ -127,7 +127,7 @@ struct Intake<'a> {
     preview: Option<(String, String, bool)>,
     last_wait: Option<(u64, String, i64)>,
 }
-fn execute(argv: &[String]) -> Result<()> {
+fn execute(argv: &[String], default_cache: &mut Option<PathBuf>) -> Result<()> {
     let err = |s: String| Error::Usage(args::error("intake", HELP, s));
     let a = Args::with_options(
         argv,
@@ -209,6 +209,9 @@ fn execute(argv: &[String]) -> Result<()> {
             .join(repository)
             .join(format!("{branch}.git")),
     };
+    if !a.has("--repo-dir") {
+        *default_cache = Some(dir.clone());
+    }
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let s = Command::new("git")
@@ -272,7 +275,15 @@ pub fn command(argv: &[String]) -> i32 {
         print!("{HELP}");
         return 0;
     }
-    match execute(argv) {
+    let session = crate::handback::begin();
+    let mut default_cache = None;
+    let result = execute(argv, &mut default_cache);
+    if let Some(cache) = default_cache {
+        if let Err(e) = session.finish(&[cache]) {
+            eprintln!("lit: could not give the intake cache back to its folder's owner: {e}");
+        }
+    }
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");

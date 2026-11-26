@@ -45,12 +45,9 @@ pub struct Options {
     pub args: Vec<String>,
     pub epoch: String,
     pub ignore: Vec<String>,
-    /// Whether args[0] has a Rust implementation; without one, Python runs twice.
-    pub native: bool,
 }
 
 pub struct Report {
-    pub python: Side,
     pub rust: Side,
     pub diffs: Vec<String>,
     pub work: PathBuf,
@@ -117,9 +114,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         let mut cmd = Command::new(&o.program);
         // Dispatch outside the observed job environment. A job may use, or
         // record a digest of, every variable it inherits.
-        if o.args.first().is_some_and(|s| !s.starts_with('-')) {
-            cmd.arg(format!("--internal-parity-{name}"));
-        }
+        cmd.arg(format!("--internal-parity-{name}"));
         let target = work.join(format!("{name}-landing.git"));
         let inputs = work.join(format!("{name}-inputs"));
         let mut intake = None;
@@ -205,12 +200,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
     let rust = sides.pop().unwrap();
     let python = sides.pop().unwrap();
     let diffs = compare(&python, &rust);
-    Ok(Report {
-        python,
-        rust,
-        diffs,
-        work,
-    })
+    Ok(Report { rust, diffs, work })
 }
 
 pub fn exit_code(status: &std::process::ExitStatus) -> i32 {
@@ -654,13 +644,16 @@ mod tests {
     fn run_sh(script: &str, setup: impl FnOnce(&Path)) -> Report {
         let src = work_dir().unwrap();
         setup(&src);
+        use std::os::unix::fs::PermissionsExt;
+        let driver = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        fs::write(&driver, "#!/bin/sh\nshift\nexec sh \"$@\"\n").unwrap();
+        fs::set_permissions(&driver, fs::Permissions::from_mode(0o700)).unwrap();
         let r = run(&Options {
-            program: "sh".into(),
+            program: driver.to_path_buf(),
             source: src.clone(),
             args: vec!["-c".into(), script.into()],
             epoch: "1700000000".into(),
             ignore: vec![],
-            native: true,
         })
         .map_err(|(e, _)| e)
         .unwrap();
@@ -719,13 +712,11 @@ mod tests {
             |_| {},
         );
         assert!(
-            r.python
-                .files
-                .contains_key("state/runs/batch-1/result.json"),
+            r.rust.files.contains_key("state/runs/batch-1/result.json"),
             "{:?}",
-            r.python.files.keys()
+            r.rust.files.keys()
         );
-        assert_eq!(r.python.stdout, "<dir>/state/runs/batch-1/result.json\n");
+        assert_eq!(r.rust.stdout, "<dir>/state/runs/batch-1/result.json\n");
         assert_eq!(done(r), Vec::<String>::new());
     }
 

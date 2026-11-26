@@ -1,0 +1,48 @@
+usage: concurrent-merge [-h]
+                        {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose}
+                        ...
+
+Batch reviewed GitHub PRs and test their combined Git tree.
+
+positional arguments:
+  {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose}
+    collect             Snapshot the ready changes (the GitHub merge queue, or
+                        PRs picked by number, label or approvals) and fetch
+                        their pinned inputs into a bare copy
+    intake              Batch ready PRs ahead of GitHub's merge queue (ready,
+                        drain, tick, withdraw, report)
+    proof               Pack, sign, push, verify and take signed test results
+                        (concurrent-merge proof -h)
+    preview             Predict the combined tree before original PRs enter
+                        the queue
+    run                 Build and test a queue snapshot locally
+    agree               Record one participant's vote for exact replacement
+                        file bytes
+    trace               Run a test job in a fresh checkout and record the
+                        inputs it consumed
+    trace-units         Trace a command that starts one process per test file;
+                        keep a footprint per file
+    select              List the units a candidate must run; the rest have
+                        passing footprints
+    cached-units        Run a job's test files against a store of each file's
+                        newest passing footprint
+    dotnet-units        Run a .NET test project's classes against a store of
+                        each class's last passing program map
+    blame               Name the change a failed combined run's failing test
+                        files could have seen
+    score-bun           Score a cached-units plan against the logs of a real
+                        bun test run
+    reuse               Predict whether candidate commits would reuse a
+                        recorded job result
+    cached-run          Run a CI job and compare it with earlier footprints on
+                        this runner
+    cache-report        Summarize shadow and enforced reuse for a store
+    shadow              Say what Frontier would decide for a snapshot from a
+                        unit store, without running anything
+    land                Push a locally tested result to its original GitHub
+                        target
+    propose             Open a tested batch as a draft PR through the existing
+                        GitHub review process
+
+options:
+  -h, --help            show this help message and exit
