@@ -31,8 +31,10 @@ Writing a reader (see CONTRIBUTING.md):
 """
 
 import importlib
+import json
 from pathlib import Path
 import pkgutil
+import subprocess
 
 READERS = {}
 for _info in sorted(pkgutil.iter_modules(__path__), key=lambda m: m.name):
@@ -43,6 +45,11 @@ for _info in sorted(pkgutil.iter_modules(__path__), key=lambda m: m.name):
         READERS[_suffix] = _module
 
 ISSUES = "https://github.com/CakeRepository/lit/issues"
+
+# The binary supplies its own path and the native readers it contains. The
+# Python entry point and the reference side of parity keep their own readers.
+native_program = None
+native_suffixes = ()
 
 
 def reader_for(path):
@@ -55,7 +62,13 @@ def outline(path, blob):
     if reader is None or b"\x00" in blob:
         return None
     try:
-        nodes = reader.outline(blob, Path(path).suffix.lower())
+        suffix = Path(path).suffix.lower()
+        if native_program and suffix in native_suffixes:
+            run = subprocess.run([native_program, "--internal-outline", suffix],
+                                 input=blob, stdout=subprocess.PIPE, check=True)
+            nodes = json.loads(run.stdout)
+        else:
+            nodes = reader.outline(blob, suffix)
     except (RecursionError, MemoryError, ValueError, UnicodeError):
         return None
     if nodes is None or not valid(nodes, 0, len(blob)):
