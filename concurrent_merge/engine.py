@@ -20,6 +20,30 @@ from .parallel import (
 from . import readers
 from .structure import choose, has_driver, resolve_file
 
+native_program = None  # set by the binary's embedded launcher
+
+
+def assemble_disjoint(repo, base, group, available, jobs, timestamp):
+    if len(group) < 2 or any(set(p.get("requires", ())) - available for p in group):
+        return None
+    if native_program:
+        topics = [dict(head=p["head"], message=commit_message(p),
+                       **({"patch_base": p["patch_base"]} if p.get("patch_base") else {}))
+                  for p in group]
+        request = dict(base=base, topics=topics, jobs=jobs, timestamp=timestamp)
+        process = subprocess.run([native_program, "--internal-assemble", repo.path],
+                                 input=json.dumps(request).encode(), stdout=subprocess.PIPE, check=True)
+        result = json.loads(process.stdout)
+        if result is None:
+            return None
+        paths = {head: [bytes.fromhex(p) for p in rows] for head, rows in result["paths"].items()}
+        return result["tip"], paths
+    deltas = disjoint_deltas(repo, base, group, available, jobs)
+    if deltas is None:
+        return None
+    tip = import_chain(repo, base, group, deltas, commit_message, timestamp)
+    return tip, {head: [p for p, _, _ in rows] for head, rows in deltas.items()}
+
 
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -425,14 +449,12 @@ class Engine:
             owners = self.owners.copy()
             selected, pending, fixes = [], [], []
             available = accepted.copy()
-            deltas = disjoint_deltas(self.repo, ours, group, available, self.jobs)
-            if deltas is not None:
-                ours = import_chain(
-                    self.repo, ours, group, deltas, commit_message, timestamp
-                )
+            assembly = assemble_disjoint(self.repo, ours, group, available, self.jobs, timestamp)
+            if assembly is not None:
+                ours, paths = assembly
                 selected.extend(group)
                 for pr in group:
-                    for raw_path, _, _ in deltas[pr["head"]]:
+                    for raw_path in paths[pr["head"]]:
                         path = os.fsdecode(raw_path)
                         owners[path] = set(owners.get(path, ())) | {participant(pr)}
             else:
@@ -464,7 +486,7 @@ class Engine:
                     selected.append(pr)
                     available.add(pr["number"])
             entry = dict(
-                assembly="disjoint" if deltas is not None else "three-way",
+                assembly="disjoint" if assembly is not None else "three-way",
                 base=final,
                 candidate=ours,
                 members=[p["number"] for p in selected],

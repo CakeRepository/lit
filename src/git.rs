@@ -76,6 +76,19 @@ impl Repo {
         Self::checked(args, self.output(args, input)?)
     }
 
+    pub fn bytes(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+        let output = self.output(args, input)?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(format!(
+                "git {}: {}",
+                args[0],
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    }
+
     fn checked(args: &[&str], output: Output) -> Result<String, String> {
         if !output.status.success() {
             return Err(format!(

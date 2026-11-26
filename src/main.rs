@@ -6,6 +6,7 @@
 
 mod agree;
 mod args;
+mod assembly;
 mod changes;
 mod collect;
 mod files;
@@ -53,6 +54,7 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
+        Some("--internal-assemble") if args.len() == 2 => assembly::command(&args[1]),
         Some("--internal-outline") if args.len() == 2 => readers::command(&args[1]),
         Some("--internal-merge-file") if args.len() == 2 => readers::structure::command(&args[1]),
         Some("version" | "--version") if args.len() == 1 => {
@@ -127,8 +129,8 @@ const PARITY_USAGE: &str =
 
 Runs a lit command with the Python lit and with the Rust lit, each in its own
 copy of the current folder, and fails if they differ in exit code, output,
-files written or Git refs. A command not in Rust yet runs on Python both times,
-which checks that it gives the same result twice.";
+files written or Git refs. The binary uses its native components and the
+embedded Python implementation for components still being ported.";
 
 fn parity_command(mut args: &[String]) -> i32 {
     let mut ignore = Vec::new();
@@ -211,7 +213,7 @@ fn parity_command(mut args: &[String]) -> i32 {
         );
     } else {
         println!(
-            "lit parity: {name} is not in Rust yet, so Python ran twice; the runs match (exit {})",
+            "lit parity: {name} uses embedded Python; the runs match (exit {})",
             report.python.code
         );
     }

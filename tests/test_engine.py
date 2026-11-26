@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -46,6 +47,8 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.repo.out("rev-parse", "main"), self.base)
 
     def setUp(self):
+        if binary := os.environ.get("LIT_BIN"):
+            self.enterContext(patch("concurrent_merge.engine.native_program", binary))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -291,7 +294,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(
             self.repo.out("for-each-ref", "refs/concurrent-merge/scratch"), ""
         )
-        with patch("concurrent_merge.engine.disjoint_deltas", return_value=None):
+        with patch("concurrent_merge.engine.assemble_disjoint", return_value=None):
             Engine(self.repo, self.engine.state).batch(target, [a, b], check)
         self.assertEqual(trees[0], trees[1])
         changed = self.commit(target, {"test.txt": b"from main"})
@@ -321,6 +324,19 @@ class BatchTests(unittest.TestCase):
         _, ready = self.engine.batch(self.base, [a, collision], lambda _: "pass")
         self.assertEqual(self.engine.history[-1]["assembly"], "three-way")
         self.assertEqual(ready, {1})
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("LIT_BIN"), "needs the native assembler and POSIX paths")
+    def test_native_fast_import_preserves_raw_paths_and_exact_commit(self):
+        from concurrent_merge.engine import assemble_disjoint
+
+        name = b'nested/a\xff\n"\t'
+        changes = [self.pr(1, {os.fsdecode(name): b"A"}), self.pr(2, {"other": b"B"})]
+        native = assemble_disjoint(self.repo, self.base, changes, set(), 2, 1700000000)
+        with patch("concurrent_merge.engine.native_program", None):
+            reference = assemble_disjoint(self.repo, self.base, changes, set(), 2, 1700000000)
+        self.assertEqual(native, reference)
+        self.assertEqual(native[1][changes[0]["head"]], [name])
+        self.assertEqual(self.repo.out("for-each-ref", "refs/concurrent-merge/scratch"), "")
 
     def test_overlapping_files_use_concurrent_structural_workers(self):
         names = ("dir/a.txt", "dir/b.txt")
@@ -356,7 +372,7 @@ class BatchTests(unittest.TestCase):
         moved = self.commit(target, {"old/readme": None, "moved/readme": b"original"})
         tip, ready = self.engine.batch(moved, [a, b], lambda _: "pass")
         self.assertEqual(self.engine.history[-1]["assembly"], "three-way")
-        with patch("concurrent_merge.engine.disjoint_deltas", return_value=None):
+        with patch("concurrent_merge.engine.assemble_disjoint", return_value=None):
             reference, expected = Engine(self.repo, self.engine.state).batch(
                 moved, [a, b], lambda _: "pass"
             )

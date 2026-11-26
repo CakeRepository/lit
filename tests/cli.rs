@@ -154,8 +154,8 @@ fn runs_todays_lit() {
     fs::remove_dir_all(work).unwrap();
 }
 
-/// run is not in Rust yet, so parity checks that two Python runs of the same
-/// batch agree, commit IDs included. The test takes a second, so the two sides
+/// Check the reference and binary batch results, commit IDs included.
+/// The test takes a second, so the two sides
 /// run in different seconds: their commit IDs match only because batch commits
 /// are made at SOURCE_DATE_EPOCH.
 #[test]

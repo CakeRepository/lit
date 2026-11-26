@@ -296,6 +296,7 @@ pub fn python() -> Result<PathBuf, String> {
 const LAUNCHER: &str = "import sys; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = 'lit'; \
 from concurrent_merge import readers; readers.native_program = sys.argv.pop(1); \
 readers.native_suffixes = sys.argv.pop(1).split(','); \
+from concurrent_merge import engine; engine.native_program = readers.native_program; \
 from concurrent_merge.cli import main; sys.exit(main())";
 
 /// Builds the Python process for args. dir is the folder extract made.
