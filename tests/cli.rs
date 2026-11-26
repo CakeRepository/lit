@@ -185,7 +185,7 @@ fn parity_on_a_batch() {
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     assert!(
-        out.status.success() && text.contains("the runs match (exit 0)"),
+        out.status.success() && text.contains("matches between Python and Rust (exit 0)"),
         "{text}"
     );
     assert!(

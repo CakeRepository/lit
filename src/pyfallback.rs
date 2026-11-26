@@ -317,6 +317,79 @@ pub fn command(python: &Path, dir: &Path, args: &[String]) -> Command {
     cmd
 }
 
+fn components() -> Result<&'static (PathBuf, PathBuf), String> {
+    use std::sync::OnceLock;
+    static PREPARED: OnceLock<Result<(PathBuf, PathBuf), String>> = OnceLock::new();
+    PREPARED
+        .get_or_init(|| {
+            Ok((
+                python()?,
+                extract(crate::embedded::FILES, &std::env::temp_dir())
+                    .map_err(|e| e.to_string())?,
+            ))
+        })
+        .as_ref()
+        .map_err(String::clone)
+}
+
+pub fn shadow(params: &crate::json::Value) -> Result<(), String> {
+    let (python, dir) = components()?;
+    let source = "import sys,json; sys.path.insert(0,sys.argv[1]); from pathlib import Path; from concurrent_merge.cli import write_shadow, Repo\n\
+        p=json.loads(sys.argv[2]); snap=json.loads(Path(p['snapshot']).read_text(encoding='utf8'))\n\
+        write_shadow(Repo(p['repo']),snap,Path(p['store']),p['job'],Path(p['directory']),Path(p['proofs']) if p['proofs'] else None,p['discover'] or None,p['strip'])";
+    let status = Command::new(python)
+        .args(["-I", "-B", "-c", source])
+        .arg(dir)
+        .arg(crate::json::canonical(params))
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("shadow exited {status}"))
+    }
+}
+
+/// The three language readers still migrating to Rust run in the private embedded copy.
+pub fn merge_file(suffix: &str, blobs: [&[u8]; 3]) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let (python, dir) = components()?;
+    let script = "import sys; sys.path.insert(0, sys.argv[1]); from concurrent_merge.structure import outline_merge\n\
+        stream = sys.stdin.buffer\n\
+        blobs = [stream.read(int.from_bytes(stream.read(8), 'big')) for _ in range(3)]\n\
+        merged = outline_merge('file' + sys.argv[2], blobs)\n\
+        if merged is None: sys.exit(1)\n\
+        sys.stdout.buffer.write(merged)";
+    let mut child = Command::new(python)
+        .args(["-I", "-B", "-c", script])
+        .arg(dir)
+        .arg(suffix)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let sent = (|| -> io::Result<()> {
+        for blob in blobs {
+            stdin.write_all(&(blob.len() as u64).to_be_bytes())?;
+            stdin.write_all(blob)?;
+        }
+        Ok(())
+    })();
+    drop(stdin);
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    match out.status.code() {
+        Some(0) => {
+            sent.map_err(|e| e.to_string())?;
+            Ok(Some(out.stdout))
+        }
+        Some(1) if out.stderr.is_empty() && sent.is_ok() => Ok(None),
+        _ => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

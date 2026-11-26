@@ -61,6 +61,29 @@ pub fn suffixes() -> Vec<&'static str> {
         .collect()
 }
 
+pub fn language(suffix: &str) -> Option<&'static str> {
+    match suffix {
+        ".md" | ".markdown" => Some("markdown"),
+        ".json" => Some("json"),
+        ".yaml" | ".yml" => Some("yaml"),
+        ".py" | ".pyi" | ".pyw" => Some("python"),
+        ".js" | ".mjs" | ".cjs" | ".jsx" | ".ts" | ".tsx" | ".mts" | ".cts" => Some("javascript"),
+        ".cs" => Some("csharp"),
+        ".ps1" | ".psm1" | ".psd1" => Some("powershell"),
+        _ => None,
+    }
+}
+
+pub fn resolve(suffix: &str, blobs: [&[u8]; 3]) -> Result<Option<Vec<u8>>, String> {
+    if suffixes().contains(&suffix) {
+        return Ok(structure::merge(suffix, blobs));
+    }
+    if language(suffix).is_none() {
+        return Ok(None);
+    }
+    crate::pyfallback::merge_file(suffix, blobs)
+}
+
 fn outline(suffix: &str, bytes: &[u8]) -> Option<Vec<Node>> {
     let (_, reader) = READERS.iter().find(|(exts, _)| exts.contains(&suffix))?;
     if bytes.contains(&0) {

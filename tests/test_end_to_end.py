@@ -18,10 +18,12 @@ The PRs, all opened against the same main:
 
 import json
 import os
+import shutil
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from e2e_github import FakeGitHub, git, lit
 
@@ -163,11 +165,12 @@ class EndToEnd(unittest.TestCase):
 
     def test_lands_what_passes_together_and_hands_back_the_rest(self):
         s = self.s
-        snapshot = s.collect(*range(1, 10))
+        with patch.dict(s.env, LIT_PYTHON=str(s.root / "no-python")):
+            snapshot = s.collect(*range(1, 10))
+            receipt, result, attempts = s.run()
         self.assertEqual(snapshot["base"], s.base)
         self.assertEqual({c["number"]: c["head"] for c in snapshot["changes"]}, s.heads)
 
-        receipt, result, attempts = s.run()
         # #1 disjoint, #2 and #3 in one file, #6 rename, #8 and #9 adding at the same spot.
         self.assertEqual(sorted(result["tested"]), [1, 2, 3, 6, 8, 9])
         back = returned(attempts)
@@ -224,6 +227,34 @@ class EndToEnd(unittest.TestCase):
         proc = s.lit("land", str(receipt), "--repo", "batch.git", ok=(2,))
         self.assertIn("collect and test again", proc.stderr)
         self.assertEqual(s.remote_main(), moved, "the remote keeps the commit that won the race")
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("LIT_BIN"), "requires the native binary and a Git-only PATH")
+    def test_collect_run_and_land_with_only_git_on_path(self):
+        s = self.s
+        programs = s.root / "programs"
+        programs.mkdir()
+        (programs / "git").symlink_to(shutil.which("git"))
+        with patch.dict(s.env, PATH=str(programs), LIT_PYTHON=str(s.root / "no-python")):
+            s.collect(1, 2, 3)
+            run = s.lit("run", "queue.json", "--repo", "batch.git", "--state", "state",
+                        "--test", "git", "ls-files", "--error-unmatch", "calc.py")
+            receipt = Path(run.stdout.strip())
+            result = json.loads(receipt.read_text())
+            self.assertEqual(result["tested"], [1, 2, 3])
+            self.assertEqual(receipt.parent.stat().st_mode & 0o777, 0o700)
+            s.lit("land", str(receipt), "--repo", "batch.git")
+        self.assertEqual(s.remote_main(), result["final"])
+
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "requires the parity harness")
+    def test_run_records_infrastructure_failure_and_shadow_observation(self):
+        s = self.s
+        s.collect(1, 2)
+        flags = ["run", "queue.json", "--repo", "batch.git", "--state", "state"]
+        for extra, expected in [(["--test", "git", "rev-parse", "--verify", "refs/heads/missing"], 2),
+                                (["--shadow-store", "empty-store", "--shadow-job", "tests",
+                                  "--test", "git", "diff", "--exit-code"], 0)]:
+            result = s.lit("parity", *flags, *extra)
+            self.assertIn(f"matches between Python and Rust (exit {expected})", result.stdout)
 
     @unittest.skipUnless(os.environ.get("LIT_BIN"), "requires the binary parity harness")
     def test_proposes_only_the_tested_topic_and_recovers_the_draft(self):

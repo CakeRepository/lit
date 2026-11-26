@@ -1,4 +1,5 @@
 //! Assemble independent path edits in one Git fast-import transaction.
+use crate::changes::Change;
 use crate::git::Repo;
 use crate::json::{self, object, Value};
 use crate::snapshot::valid_oid;
@@ -329,6 +330,38 @@ fn assemble(repo: &Repo, request: &Value) -> Result<Value> {
         ("tip", Value::String(tip)),
         ("paths", Value::Object(paths)),
     ]))
+}
+
+pub type Paths = BTreeMap<String, Vec<Vec<u8>>>;
+
+pub fn batch(
+    repo: &Repo,
+    base: &str,
+    group: &[Change],
+    jobs: usize,
+    stamp: i64,
+) -> Result<Option<(String, Paths)>> {
+    let messages: Vec<_> = group.iter().map(Change::message).collect();
+    let topics: Vec<_> = group
+        .iter()
+        .zip(&messages)
+        .map(|(c, m)| Topic {
+            head: &c.head,
+            patch_base: None,
+            message: m,
+        })
+        .collect();
+    let Some(deltas) = disjoint(repo, base, &topics, jobs)? else {
+        return Ok(None);
+    };
+    let tip = chain(repo, base, &topics, &deltas, stamp)?;
+    Ok(Some((
+        tip,
+        deltas
+            .into_iter()
+            .map(|(h, v)| (h, v.into_iter().map(|e| e.path).collect()))
+            .collect(),
+    )))
 }
 
 pub fn command(repo: &str) -> i32 {

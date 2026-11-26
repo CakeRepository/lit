@@ -1,0 +1,33 @@
+usage: concurrent-merge run [-h] [--jobs JOBS] [--shadow-store SHADOW_STORE]
+                            [--shadow-job SHADOW_JOB]
+                            [--shadow-proofs SHADOW_PROOFS]
+                            [--shadow-discover GLOB]
+                            [--shadow-strip SHADOW_STRIP] --test ... --state
+                            STATE --repo REPO
+                            snapshot
+
+positional arguments:
+  snapshot
+
+options:
+  -h, --help            show this help message and exit
+  --jobs JOBS           Concurrent Git and structural comparison workers on
+                        this runner (default: up to 8)
+  --shadow-store SHADOW_STORE
+                        Also write shadow.json: what Frontier would have
+                        decided from this unit store (advisory, changes
+                        nothing)
+  --shadow-job SHADOW_JOB
+                        The store's job for --shadow-store
+  --shadow-proofs SHADOW_PROOFS
+                        A store that 'proof take' filled with signed records
+                        (each PR's own CI run): the shadow counts them as
+                        certificates too
+  --shadow-discover GLOB
+                        Test files as cached-units finds them, for --shadow-
+                        store: any without a passing footprint is reported
+  --shadow-strip SHADOW_STRIP
+                        Prefix --shadow-discover removes to name a unit
+  --test ...
+  --state STATE
+  --repo REPO

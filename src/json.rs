@@ -9,6 +9,9 @@ pub enum Value {
     Bool(bool),
     Number(String),
     String(String),
+    // A Git path may contain arbitrary bytes. JSON receipts use Python's
+    // surrogateescape encoding for the bytes that aren't valid UTF-8.
+    PathBytes(Vec<u8>),
     Array(Vec<Value>),
     Object(BTreeMap<String, Value>),
 }
@@ -262,6 +265,7 @@ fn write(v: &Value, depth: usize, out: &mut String) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(n),
         Value::String(s) => quote(s, out),
+        Value::PathBytes(bytes) => ascii_bytes(bytes, out),
         Value::Array(items) if items.is_empty() => out.push_str("[]"),
         Value::Object(map) if map.is_empty() => out.push_str("{}"),
         Value::Array(items) => {
@@ -287,6 +291,72 @@ fn write(v: &Value, depth: usize, out: &mut String) {
             out.push('}');
         }
     }
+}
+
+/// Python json.dumps(sort_keys=True), whose exact bytes identify an existing agreement.
+pub fn canonical(v: &Value) -> String {
+    fn put(v: &Value, out: &mut String) {
+        match v {
+            Value::Null => out.push_str("null"),
+            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Value::Number(n) => out.push_str(n),
+            Value::String(s) => ascii_bytes(s.as_bytes(), out),
+            Value::PathBytes(b) => ascii_bytes(b, out),
+            Value::Array(a) => {
+                out.push('[');
+                for (i, v) in a.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    put(v, out);
+                }
+                out.push(']');
+            }
+            Value::Object(map) => {
+                out.push('{');
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    ascii_bytes(k.as_bytes(), out);
+                    out.push_str(": ");
+                    put(v, out);
+                }
+                out.push('}');
+            }
+        }
+    }
+    let mut output = String::new();
+    put(v, &mut output);
+    output
+}
+
+fn ascii_bytes(bytes: &[u8], out: &mut String) {
+    use std::fmt::Write;
+    out.push('"');
+    for chunk in bytes.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                ' '..='~' => out.push(c),
+                _ => {
+                    for n in c.encode_utf16(&mut [0; 2]) {
+                        write!(out, "\\u{n:04x}").unwrap();
+                    }
+                }
+            }
+        }
+        for &invalid in chunk.invalid() {
+            write!(out, "\\udc{invalid:02x}").unwrap();
+        }
+    }
+    out.push('"');
 }
 
 fn quote(s: &str, out: &mut String) {
