@@ -33,10 +33,14 @@ pub fn replace(path: &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 pub fn read(path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| match e.kind() {
+    fs::read(path).map_err(|e| error(path, e))
+}
+
+pub fn error(path: &Path, e: io::Error) -> String {
+    match e.kind() {
         io::ErrorKind::NotFound => {
             format!("[Errno 2] No such file or directory: '{}'", path.display())
         }
         _ => format!("{}: {e}", path.display()),
-    })
+    }
 }

@@ -115,17 +115,6 @@ fn strings(v: &Value) -> Result<BTreeSet<String>> {
 fn array(items: impl IntoIterator<Item = String>) -> Value {
     Value::Array(items.into_iter().map(Value::String).collect())
 }
-fn truth(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(m) => !m.is_empty(),
-        Value::String(s) => !s.is_empty(),
-        Value::PathBytes(b) => !b.is_empty(),
-        Value::Number(s) => s.parse::<f64>() != Ok(0.0),
-    }
-}
 fn observed(unit: &Value, key: &str) -> Result<BTreeSet<String>> {
     unit.get(key)
         .map(strings)
@@ -142,7 +131,7 @@ fn verdict(
         let mut seen = observed(&reads, "tracked")?;
         seen.extend(observed(&reads, "absent")?);
         let dirs = observed(&reads, "listings")?;
-        let incomplete = reads.get("incomplete").is_some_and(truth);
+        let incomplete = reads.get("incomplete").is_some_and(Value::truthy);
         let mut hits = Vec::new();
         for (id, paths) in changes {
             if incomplete
@@ -218,7 +207,7 @@ fn blame(args: &Args<'_>) -> Result<Value> {
     for file in &args.positional {
         match read(file)?.get("failed_reads") {
             Some(Value::Object(units)) => failed.extend(units.clone()),
-            Some(v) if truth(v) => {
+            Some(v) if v.truthy() => {
                 return Err("Expected failed_reads to contain unit footprints".into())
             }
             _ => (),

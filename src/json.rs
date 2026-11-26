@@ -17,6 +17,18 @@ pub enum Value {
 }
 
 impl Value {
+    pub fn truthy(&self) -> bool {
+        match self {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            Value::Array(a) => !a.is_empty(),
+            Value::Object(m) => !m.is_empty(),
+            Value::String(s) => !s.is_empty(),
+            Value::PathBytes(b) => !b.is_empty(),
+            Value::Number(s) => s.parse::<f64>() != Ok(0.0),
+        }
+    }
+
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
             Self::Object(map) => map.get(key),

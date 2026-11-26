@@ -410,3 +410,58 @@ fn blame_preserves_distinct_non_unicode_git_paths() {
     );
     fs::remove_dir_all(work).unwrap();
 }
+
+#[test]
+fn cache_report_matches_python_ledgers_without_python_at_runtime() {
+    let work = temp("cache-report");
+    let store = work.join("store");
+    for job in ["first", "other", "empty"] {
+        fs::create_dir_all(store.join(job)).unwrap();
+    }
+    fs::write(
+        store.join("first/ledger.jsonl"),
+        concat!(
+        "{\"decision\":\"audited\",\"seconds\":1.15,\"predicted_reuse\":true,\"sound\":false}\n",
+        "{\"decision\":\"ran\",\"seconds\":1.25,\"predicted_reuse\":true,\"sound\":true}\n",
+        "{\"decision\":\"reused\",\"seconds_saved\":200.5}\n",
+        "{\"decision\":\"ran\",\"incomplete\":[\"network\"]}\n"),
+    )
+    .unwrap();
+    fs::write(
+        store.join("other/ledger.jsonl"),
+        "\n{\"decision\":\"ran\",\"seconds\":3}\n",
+    )
+    .unwrap();
+    fs::write(store.join("empty/ledger.jsonl"), "").unwrap();
+    for (tail, code) in [
+        (&[][..], 0),
+        (&["--job", "empty"][..], 0),
+        (&["--job", "missing"][..], 2),
+        (&["--job", "../other"][..], 2),
+    ] {
+        let out = lit()
+            .args(["parity", "cache-report", "--store", "store"])
+            .args(tail)
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout).contains(&format!("(exit {code})")),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = lit()
+        .args(["cache-report", "--store", "store", "--job", "first"])
+        .env("LIT_PYTHON", work.join("missing"))
+        .env_remove("LIT_IMPL")
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("\"unsound\": 1")
+    );
+    fs::remove_dir_all(work).unwrap();
+}
