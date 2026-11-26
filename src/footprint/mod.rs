@@ -6,8 +6,10 @@ mod events;
 mod glob;
 mod record;
 mod summary;
+mod symbols;
 pub(crate) mod trace_cli;
 mod tracer;
+pub(crate) mod unit_store;
 mod workspace;
 
 use crate::{

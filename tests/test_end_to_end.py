@@ -633,6 +633,78 @@ class FootprintSelectionCLI(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("strace") and not traced(), "syscall recording needs an available tracer")
 class FootprintRecordingCLI(unittest.TestCase):
+    def test_unit_cache_function_coverage_shards_batch_and_signed_audits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            (repo / "src").mkdir()
+            source = repo / "src/lib.ts"
+            source.write_text("export function used() {\n  return 1\n}\n"
+                              "export function other() {\n  return 2\n}\n")
+            for name in ("used", "other"):
+                (repo / (name + ".test")).write_text(name)
+            (repo / "worker").write_text(textwrap.dedent("""\
+                set -eu
+                for p in "$@"; do
+                  case "$p" in --coverage-dir=*) cover=${p#*=};; *.test) unit=$p;; esac
+                done
+                cat "$unit" src/lib.ts > /dev/null
+                mkdir -p scratch
+                echo output > scratch/generated
+                if [ "$unit" = used.test ]; then a=1; b=0; else a=0; b=1; fi
+                if [ -n "${cover:-}" ]; then
+                  mkdir -p "$cover"
+                  printf 'SF:src/lib.ts\\nDA:2,%s\\nDA:5,%s\\nend_of_record\\n' "$a" "$b" > "$cover/lcov.info"
+                fi
+                if [ "$unit" = other.test ] && grep -q 'return -1' src/lib.ts; then exit 1; fi
+                test -z "${ZZ_LIT_FAIL_AUDIT:-}"
+                """))
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "two independent functions")
+            (root / "pinned.txt").write_text("used.test\n")
+            def run(store, mode, *options, fail=False, code=0):
+                argv = ["cached-units", "--workdir", "repo", "--store", store, "--job", "tests",
+                        "--each", "sh worker {lcov} {}", "--symbols", "src/*.ts", "--scratch", "scratch/",
+                        "--discover", "*.test", "--mode", mode, "--ignore-env", "*", "--audit-rate", "0",
+                        "--list", "list.txt", "--log", "test.log", "--receipt", "receipt.json", *options]
+                env = {"LC_ALL": "C", "ZZ_LIT_FAIL_AUDIT": "1" if fail else ""}
+                if os.environ.get("LIT_BIN"):
+                    pair = lit(root, env, "parity", *argv)
+                    self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+                    self.assertIn(f"(exit {code})", pair.stdout)
+                proc = lit(root, dict(env, LIT_PYTHON=str(root / "unavailable")), *argv)
+                self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+                result = json.loads((root / "receipt.json").read_text())
+                self.assertEqual((root / "list.txt").read_text().splitlines(), sorted(result["decisions"]))
+                return result
+            self.assertEqual(run("proof", "shadow")["ran"], 2)
+            self.assertEqual(run("proof", "enforce")["reused"], 2)
+            self.assertEqual(run("fresh", "enforce", "--batch", "true {}")["batch"]["files"], 2)
+            self.assertFalse((root / "fresh/tests/units").exists())
+            for shard in ("1/2", "2/2"):
+                row = run("shards", "shadow", "--shard", shard, "--pin-file", "pinned.txt")
+                self.assertEqual(row["ran"], 1)
+            (root / "proof/tests/proof-signers.json").write_text(json.dumps(
+                {"used.test": ["alice", "bob"], "other.test": ["bob"]}))
+            proved = run("other", "enforce", "--proof-store", "proof", "--audit-book", "book.json")
+            self.assertEqual(proved["reusable_by_proof"], 2)
+            self.assertEqual(proved["signer_audits"], {"alice": {"ok": 1, "wrong": 0},
+                                                      "bob": {"ok": 2, "wrong": 0}})
+            wrong = run("audit", "enforce", "--proof-store", "proof", "--audit-book", "book.json", fail=True, code=1)
+            self.assertEqual(wrong["unsound"], ["other.test", "used.test"])
+            self.assertEqual(json.loads((root / "book.json").read_text())["signers"]["bob"]["failed"], 2)
+            source.write_text(source.read_text().replace("return 2", "return -1"))
+            git(repo, "commit", "-qam", "change only other")
+            planned = run("proof", "plan")
+            self.assertEqual(planned["reusable_by_function"], 1)
+            self.assertEqual(planned["reusable"], ["used.test"])
+            result = run("proof", "enforce", "--batch", "false {}", code=1)
+            self.assertTrue(result["batch"]["traced_after"])
+            self.assertEqual(result["failed"], ["other.test"])
+            self.assertIn("src/lib.ts", result["failed_reads"]["other.test"]["tracked"])
+
     def test_job_cache_shadow_enforce_audit_and_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             outer = Path(tmp)

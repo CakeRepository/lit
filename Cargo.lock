@@ -501,6 +501,7 @@ dependencies = [
  "getrandom 0.4.3",
  "jiff",
  "libz-sys",
+ "ring",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
