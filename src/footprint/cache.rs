@@ -364,3 +364,58 @@ pub fn command(args: &[String]) -> i32 {
         2
     })
 }
+
+/// Render the receipt for the cached-run composite action after the test exits.
+pub fn action_receipt(path: &str) -> i32 {
+    fn append_line(variable: &str, text: &str) -> Result<()> {
+        let path = std::env::var_os(variable).ok_or_else(|| format!("missing {variable}"))?;
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|e| files::error(Path::new(&path), e))?;
+        writeln!(file, "{text}").map_err(|e| e.to_string())
+    }
+    fn render(path: &Path) -> Result<()> {
+        let receipt = paths::parse(&files::read(path)?)?;
+        let decision = receipt.field("decision")?.string()?;
+        let prior = receipt
+            .get("prior_commit")
+            .filter(|v| v.truthy())
+            .map(Value::string)
+            .transpose()?
+            .unwrap_or("");
+        if !matches!(decision, "ran" | "audited" | "reused")
+            || !prior.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err("invalid cache receipt decision or prior commit".into());
+        }
+        let mode = receipt.field("mode")?.string()?;
+        let job = receipt.field("job")?.string()?;
+        let mut line = format!("lit {mode}: {decision} {job}");
+        if !prior.is_empty() {
+            line.push_str(&format!(
+                ", predicted by the passing run on {}",
+                &prior[..12.min(prior.len())]
+            ));
+            if decision != "reused" {
+                line.push_str(if receipt.get("sound").is_some_and(Value::truthy) {
+                    " (matched)"
+                } else {
+                    " (DID NOT MATCH)"
+                });
+            }
+        }
+        append_line(
+            "GITHUB_OUTPUT",
+            &format!("decision={decision}\nprior-commit={prior}"),
+        )?;
+        append_line("GITHUB_STEP_SUMMARY", &line)
+    }
+    match render(Path::new(path)) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("lit: {e}");
+            2
+        }
+    }
+}

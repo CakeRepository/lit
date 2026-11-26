@@ -83,7 +83,8 @@ echo "self-check: the Nov 25 failure is caught"
 
 # 2. lit as root: a full batch run that writes Git objects, refs and receipts
 #    into folders the runner's user owns.
-as_root 'lit version
+as_root 'export LIT_PYTHON=/lit-no-python
+lit version
 lit run queue.json --repo batch.git --state state --test test -f b.txt
 lit run queue.json --repo batch.git --state state --test test -f b.txt'
 

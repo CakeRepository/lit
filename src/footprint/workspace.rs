@@ -64,7 +64,15 @@ impl Workspace {
             }
             if !work
                 .bytes(
-                    &["status", "--porcelain", "-z", "--untracked-files=no"],
+                    // A root container must not replace the runner-owned index
+                    // just to check whether tracked files changed.
+                    &[
+                        "--no-optional-locks",
+                        "status",
+                        "--porcelain",
+                        "-z",
+                        "--untracked-files=no",
+                    ],
                     None,
                 )?
                 .is_empty()
@@ -129,4 +137,40 @@ pub use super::digests::file as digest;
 pub fn save(path: &Path, v: &Value) -> Result<()> {
     files::replace(path, format!("{}\n", paths::sorted(v, true)).as_bytes())
         .map_err(|e| files::error(path, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checking_the_workspace_leaves_the_git_index_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let repo = Repo::new(dir).unwrap();
+        repo.text(&["init", "-q"], None).unwrap();
+        std::fs::write(dir.join("input"), "sample").unwrap();
+        repo.text(&["add", "input"], None).unwrap();
+        repo.text(
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "input",
+            ],
+            None,
+        )
+        .unwrap();
+        let index = dir.join(".git/index");
+        std::fs::remove_file(&index).unwrap();
+        repo.text(&["read-tree", "HEAD"], None).unwrap();
+        let before = std::fs::read(&index).unwrap();
+        Workspace::new(&repo, "HEAD", Some(dir)).unwrap();
+        assert_eq!(before, std::fs::read(&index).unwrap());
+        std::fs::write(dir.join("input"), "changed").unwrap();
+        assert!(Workspace::new(&repo, "HEAD", Some(dir)).is_err());
+    }
 }

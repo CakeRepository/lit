@@ -20,7 +20,7 @@ from .parallel import (
 from . import readers
 from .structure import choose, has_driver, resolve_file
 
-native_program = None  # set by the binary's embedded launcher
+native_program = None  # set by native engine conformance tests
 
 
 def assemble_disjoint(repo, base, group, available, jobs, timestamp):

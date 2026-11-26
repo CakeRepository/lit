@@ -162,5 +162,5 @@ def lit_command():
 
 
 def lit(cwd, env, *args):
-    return subprocess.run([*lit_command(), *args], cwd=cwd, env=dict(os.environ, **env),
+    return subprocess.run([*lit_command(), *args], cwd=cwd, env={**os.environ, 'LIT_REFERENCE': str(ROOT), **env},
                           capture_output=True, text=True)

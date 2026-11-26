@@ -1,8 +1,4 @@
-//! lit as one binary.
-//!
-//! Commands move from Python to Rust one at a time (CakeRepository/lit#35). A
-//! command that has not moved yet runs the Python lit embedded in this binary,
-//! so the binary already does everything concurrent-merge does.
+//! Standalone CLI for testing and landing concurrent changes.
 
 mod agree;
 mod args;
@@ -28,8 +24,8 @@ mod parity_land;
 mod preview;
 mod proof;
 mod propose;
-mod pyfallback;
 mod readers;
+mod reference;
 mod reports;
 mod run;
 mod sampling;
@@ -40,34 +36,28 @@ mod sys;
 
 use std::process::ExitCode;
 
-mod embedded {
-    include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
-}
-
 type Native = fn(&[String]) -> i32;
 
-/// The commands written in Rust. Every other command runs on the embedded
-/// Python. A command joins this table once its parity cases match.
 const NATIVE: &[(&str, Native)] = &[
-    ("run", run::command),
+    ("collect", collect::command),
     ("intake", intake::command),
+    ("proof", proof::command),
+    ("preview", preview::command),
+    ("run", run::command),
     ("agree", agree::command),
-    ("blame", reports::blame_command),
-    ("score-bun", reports::score_command),
-    ("shadow", footprint::shadow::command),
-    ("cache-report", cache_report::command),
-    ("cached-run", footprint::cache::command),
-    ("cached-units", footprint::unit_store::command),
-    ("dotnet-units", footprint::dotnet::command),
-    ("reuse", footprint::reuse),
-    ("select", footprint::select),
     ("trace", footprint::trace_cli::trace),
     ("trace-units", footprint::trace_cli::units),
-    ("collect", collect::command),
+    ("select", footprint::select),
+    ("cached-units", footprint::unit_store::command),
+    ("dotnet-units", footprint::dotnet::command),
+    ("blame", reports::blame_command),
+    ("score-bun", reports::score_command),
+    ("reuse", footprint::reuse),
+    ("cached-run", footprint::cache::command),
+    ("cache-report", cache_report::command),
+    ("shadow", footprint::shadow::command),
     ("land", land::command),
-    ("proof", proof::command),
     ("propose", propose::command),
-    ("preview", preview::command),
 ];
 
 fn native(name: &str) -> Option<Native> {
@@ -102,12 +92,19 @@ fn run(args: &[String]) -> i32 {
             0
         }
         Some("parity") => parity_command(&args[1..]),
+        Some("--internal-action-receipt") if args.len() == 2 => {
+            footprint::cache::action_receipt(&args[1])
+        }
         _ => {
             let session = handback::begin();
             let command = args.first().and_then(|name| native(name));
             let code = match command {
                 Some(cmd) if !python => cmd(&args[1..]),
-                _ => fallback(args, python),
+                _ if python => reference::run(args).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    2
+                }),
+                _ => root(args),
             };
             if let Err(e) = session.finish(&handback::paths(args)) {
                 eprintln!("lit: could not give some files back to their folder's owner: {e}");
@@ -118,48 +115,33 @@ fn run(args: &[String]) -> i32 {
 }
 
 fn version_line() -> String {
-    let digest = pyfallback::digest(embedded::FILES);
     format!(
-        "lit {} {}/{} (embedded python {})",
+        "lit {} {}/{}",
         env!("LIT_BUILD_VERSION"),
         std::env::consts::OS,
-        std::env::consts::ARCH,
-        &digest[..12]
+        std::env::consts::ARCH
     )
 }
 
-/// Runs args with the embedded Python lit.
-fn fallback(args: &[String], python_only: bool) -> i32 {
-    let python = match pyfallback::python() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let dir = match pyfallback::extract(embedded::FILES, &std::env::temp_dir()) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("lit: could not prepare the embedded Python: {e}");
-            return 2;
-        }
-    };
-    let mut child = match pyfallback::command(&python, &dir, args, python_only).spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("lit: {e}");
-            return 2;
-        }
-    };
-    #[cfg(unix)]
-    sys::forward_signals_to(child.id());
-    match child.wait() {
-        Ok(status) => parity::exit_code(&status),
-        Err(e) => {
-            eprintln!("lit: {e}");
-            2
-        }
+fn root(args: &[String]) -> i32 {
+    if args
+        .first()
+        .is_some_and(|s| matches!(s.as_str(), "-h" | "--help"))
+    {
+        print!("{}", include_str!("help/root.txt"));
+        return 0;
     }
+    let choices = NATIVE
+        .iter()
+        .map(|(name, _)| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = match args.iter().find(|s| !s.starts_with('-')) {
+        Some(name) => format!("argument action: invalid choice: '{name}' (choose from {choices})"),
+        None => "the following arguments are required: action".to_string(),
+    };
+    eprintln!("{}\nconcurrent-merge: error: {message}", args::ROOT_USAGE);
+    2
 }
 
 const PARITY_USAGE: &str =
@@ -167,8 +149,7 @@ const PARITY_USAGE: &str =
 
 Runs a lit command with the Python lit and with the Rust lit, each in its own
 copy of the current folder, and fails if they differ in exit code, output,
-files written or Git refs. The binary uses its native components and the
-embedded Python implementation for components still being ported.";
+files written or Git refs. Set LIT_REFERENCE to the trusted lit source checkout\nand use Python 3.12 or later for the reference run.";
 
 fn parity_command(mut args: &[String]) -> i32 {
     let mut ignore = Vec::new();
@@ -179,6 +160,10 @@ fn parity_command(mut args: &[String]) -> i32 {
             "--" => {
                 args = &args[1..];
                 break;
+            }
+            "-h" | "--help" => {
+                println!("{PARITY_USAGE}");
+                return 0;
             }
             "--keep" => {
                 keep = true;
@@ -209,13 +194,16 @@ fn parity_command(mut args: &[String]) -> i32 {
             return 2;
         }
     };
+    if let Err(e) = reference::driver() {
+        eprintln!("{e}");
+        return 2;
+    }
     let opts = parity::Options {
         program,
         source,
         args: args.to_vec(),
         epoch,
         ignore,
-        native: native(&args[0]).is_some(),
     };
     let report = match parity::run(&opts) {
         Ok(r) => r,
@@ -244,16 +232,9 @@ fn parity_command(mut args: &[String]) -> i32 {
     } else {
         let _ = std::fs::remove_dir_all(&report.work);
     }
-    if opts.native {
-        println!(
-            "lit parity: {name} matches between Python and Rust (exit {})",
-            report.rust.code
-        );
-    } else {
-        println!(
-            "lit parity: {name} uses embedded Python; the runs match (exit {})",
-            report.python.code
-        );
-    }
+    println!(
+        "lit parity: {name} matches between Python and Rust (exit {})",
+        report.rust.code
+    );
     0
 }

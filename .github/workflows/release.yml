@@ -83,4 +83,4 @@ jobs:
           set -euo pipefail
           (cd dist && sha256sum lit-* > SHA256SUMS && cat SHA256SUMS)
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "lit $TAG" --verify-tag \
-            --notes "One binary per platform. Check a download against SHA256SUMS. Commands not yet in Rust run on the Python lit inside the binary, so they still need Python 3.12 (#35)."
+            --notes "One binary per platform. Check a download against SHA256SUMS. All merge, intake and proof commands run natively. Use Git 2.48 or later for repository operations."

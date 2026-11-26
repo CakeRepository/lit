@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn lit() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_lit"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_lit"));
+    cmd.env("LIT_REFERENCE", env!("CARGO_MANIFEST_DIR"));
+    cmd
 }
 
 fn python() -> String {
@@ -107,16 +109,21 @@ fn version() {
     let out = lit().arg("version").output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        out.status.success() && text.starts_with("lit ") && text.contains("embedded python"),
+        out.status.success()
+            && text.starts_with("lit ")
+            && text.ends_with(&format!(
+                "{}/{}\n",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )),
         "{text}"
     );
 }
 
-/// Drives a real batch through the embedded Python and checks that nothing was
+/// Drives a real batch through the standalone binary and checks that nothing was
 /// written next to the binary's source or into the checkout.
 #[test]
 fn runs_todays_lit() {
-    let python = python();
     let work = scratch_batch("run");
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"));
     let before = tree(checkout);
@@ -129,10 +136,12 @@ fn runs_todays_lit() {
             "--state",
             "state",
             "--test",
-            &python,
-            "-c",
-            "from pathlib import Path; assert Path('b.txt').is_file()",
+            "git",
+            "ls-files",
+            "--error-unmatch",
+            "b.txt",
         ])
+        .env("LIT_PYTHON", work.join("missing-python"))
         .current_dir(&work)
         .output()
         .unwrap();
@@ -463,5 +472,71 @@ fn cache_report_matches_python_ledgers_without_python_at_runtime() {
     assert!(
         out.status.success() && String::from_utf8_lossy(&out.stdout).contains("\"unsound\": 1")
     );
+    fs::remove_dir_all(work).unwrap();
+}
+
+#[test]
+fn all_operational_commands_start_without_a_runtime() {
+    let work = temp("standalone");
+    let help = include_str!("../src/help/root.txt");
+    let commands = help.split_once('{').unwrap().1.split_once('}').unwrap().0;
+    for name in commands.split(',').chain(["parity", ""]) {
+        let mut cmd = lit();
+        if !name.is_empty() {
+            cmd.arg(name);
+        }
+        let output = cmd
+            .arg("--help")
+            .env("PATH", &work)
+            .env_remove("LIT_REFERENCE")
+            .env("LIT_PYTHON", work.join("missing-python"))
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("usage:"));
+    }
+    fs::remove_dir_all(work).unwrap();
+}
+
+#[test]
+fn action_outputs_describe_the_actual_cache_receipt() {
+    let work = temp("action-output");
+    let output = work.join("output");
+    let summary = work.join("summary");
+    fs::write(&output, "previous=entry\n").unwrap();
+    fs::write(&summary, "").unwrap();
+    let receipt = work.join("receipt.json");
+    fs::write(&receipt, r#"{"decision":"audited","mode":"enforce","job":"unit","prior_commit":"0123456789abcdef","sound":false}"#).unwrap();
+    let run = || {
+        lit()
+            .arg("--internal-action-receipt")
+            .arg(&receipt)
+            .env("GITHUB_OUTPUT", &output)
+            .env("GITHUB_STEP_SUMMARY", &summary)
+            .output()
+            .unwrap()
+    };
+    assert!(run().status.success());
+    let fields = fs::read_to_string(&output).unwrap();
+    assert_eq!(
+        fields,
+        "previous=entry\ndecision=audited\nprior-commit=0123456789abcdef\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&summary).unwrap(),
+        "lit enforce: audited unit, predicted by the passing run on 0123456789ab (DID NOT MATCH)\n"
+    );
+    fs::write(
+        &receipt,
+        r#"{"decision":"ran","prior_commit":"0\nextra=x"}"#,
+    )
+    .unwrap();
+    assert!(!run().status.success());
+    assert_eq!(fs::read_to_string(&output).unwrap(), fields);
     fs::remove_dir_all(work).unwrap();
 }

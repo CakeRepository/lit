@@ -8,12 +8,12 @@ What lit has and hasn't proven on real PRs so far, with the numbers, is in [docs
 
 lit is built to be driven by coding agents. Many agents can open PRs at once; lit tests them together on one runner, lands the passing ones as ordinary Git commits, and hands each failure or overlap back to the change that caused it.
 
-1. Install it: `python -m pip install git+https://github.com/CakeRepository/lit.git` (Python 3.12+, Git 2.48+). The command is `concurrent-merge`, and `concurrent-merge --help` lists every subcommand.
-2. Snapshot what is ready: `concurrent-merge collect OWNER/REPO --branch main --repo batch.git --out queue.json` reads the GitHub merge queue. A repository without one picks its changes with `--prs 133 134 135`, `--label lit-ready` or `--min-reviews 2` (see "Repositories without a merge queue"). Any other source of ready changes can write the same JSON shown below.
-3. Test the batch: `concurrent-merge run queue.json --repo batch.git --state batch-state --test ./your-test-command`. Exit 0 from your command accepts a candidate and exit 1 starts bisection.
+1. Install the [release binary](#one-binary) for your platform and Git 2.48 or later. Run `lit --help` to list the merge commands.
+2. Snapshot what is ready: `lit collect OWNER/REPO --branch main --repo batch.git --out queue.json` reads the GitHub merge queue. A repository without one picks its changes with `--prs 133 134 135`, `--label lit-ready` or `--min-reviews 2` (see "Repositories without a merge queue"). Any other source of ready changes can write the same JSON shown below.
+3. Test the batch: `lit run queue.json --repo batch.git --state batch-state --test ./your-test-command`. Exit 0 from your command accepts a candidate and exit 1 starts bisection.
 4. Read the receipt: `run` prints the path of `result.json`. It lists the passing subset, and `attempts.json` beside it lists every candidate and failure. A held change has a conflict file under `batch-state/conflicts` with the exact Git blobs to fix.
-5. Fix a conflict: write the agreed file bytes and record your vote with `concurrent-merge agree` (below). Rerun step 3.
-6. Land: `concurrent-merge land` pushes the tested commit with a lease, or `concurrent-merge propose` opens a PR for repositories that require GitHub's merge queue.
+5. Fix a conflict: write the agreed file bytes and record your vote with `lit agree` (below). Rerun step 3.
+6. Land: `lit land` pushes the tested commit with a lease, or `lit propose` opens a PR for repositories that require GitHub's merge queue.
 7. Teach lit your language: if lit reports that it has no reader for your files, open an issue and send a reader (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 8. Skip tests that cannot be affected: `trace-units` and `cached-units` record what each test file read and rerun only files whose inputs changed (see "One footprint per test file").
 
@@ -21,32 +21,39 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## One binary
 
-lit is becoming one Rust binary, `lit`, with nothing else to install ([#35](https://github.com/CakeRepository/lit/issues/35)). It takes the same commands and options as `concurrent-merge`. A command that has not moved to Rust yet runs on the Python lit built into the binary, so for now the machine still needs Python 3.12 or later. The native GitHub client uses ureq for HTTPS and fancy-regex for author capture patterns. `collect`, `run`, `agree`, `land`, `propose`, `preview`, `blame`, and `score-bun` use Rust. The Python source reader uses Ruff’s parser. The Rust engine handles structural merges for all seven supported languages. `--shadow-store` uses the embedded Frontier implementation. Build lit with Rust 1.94 or later:
+Download the executable for your OS and CPU from the [v0.1.0 release](https://github.com/CakeRepository/lit/releases/tag/v0.1.0). The Linux builds statically link musl. The macOS assets begin with `lit-darwin-` and the Windows assets end in `.exe`. Each platform ships `amd64` (Intel/AMD x86-64) and `arm64` builds.
+
+For example, install the Linux amd64 release under your home directory:
 
 ```sh
-cargo build --release
-./target/release/lit version
+release=https://github.com/CakeRepository/lit/releases/download/v0.1.0
+(
+  set -eu
+  dir=$(mktemp -d)
+  trap 'rm -rf "$dir"' EXIT
+  cd "$dir"
+  curl -fsSLO "$release/lit-linux-amd64"
+  curl -fsSLO "$release/SHA256SUMS"
+  grep '  lit-linux-amd64$' SHA256SUMS | sha256sum --check
+  install -Dm755 lit-linux-amd64 "$HOME/.local/bin/lit"
+)
+"$HOME/.local/bin/lit" version
 ```
 
-Each `v*` tag publishes a release with a binary for Linux, macOS and Windows on amd64 and arm64, and their SHA-256 sums in `SHA256SUMS`. Check a download before you run it:
+For another platform, download its asset and compare its SHA-256 with the matching entry in `SHA256SUMS`. On macOS use `shasum -a 256` and on Windows use `Get-FileHash -Algorithm SHA256`. Rename the verified executable to `lit` or `lit.exe` and place it on your path. To build from source, run `cargo build --release --locked`.
 
-```sh
-sha256sum --check --ignore-missing SHA256SUMS
-```
+All 19 operational commands run in the Rust binary. Contributors can compare one with the Python 3.12+ reference by setting `LIT_REFERENCE` to an absolute path to a trusted copy of the lit source at the same revision. From a fixture directory, `lit parity COMMAND ...` compares exit codes, output, files, Git refs and batch commit IDs in two private copies. For intake fixtures, [the queue replay tests](tests/test_native_intake.py) show how to record GitHub responses and compare outgoing mutations without changing a live repository.
 
-`lit parity COMMAND ...` runs a command with the Python lit and with the Rust lit, each in its own copy of the current folder, and fails if their exit codes, output, files or Git refs differ. Times, durations, test logs and the random part of a run folder may differ; batch commits are made at `SOURCE_DATE_EPOCH`, which parity pins, so their IDs must match. A command moves to Rust only once its parity cases match. During a partial port, parity compares the Python reference with the binary running its native components. For land and propose, parity reads the target and gives each side a private bare copy. It compares the destination refs and the proposed draft contents. Only a normal invocation publishes them.
-
-The binary runs its Python from a private folder in the OS temp directory, never from the checkout, the action folder, `HOME` or `RUNNER_TEMP`. When it runs as root, as a GitHub container job does, it gives anything it created under the paths you name back to the owner of their folder, so the runner can still clean up. CI checks both with `scripts/root-hygiene.sh`.
+When lit runs as root in a container, it gives files it creates under the supplied paths back to the owner so the runner can clean up after the job. CI exercises this with `scripts/root-hygiene.sh`.
 
 ## Run a batch
 
-Use Python 3.12 or later and Git 2.48 or later. Collecting, testing, merging and landing need nothing else installed: lit is written with the Python standard library and plain Git, and talks to GitHub through its own small client. That client uses the token in `GH_TOKEN` or `GITHUB_TOKEN`, or else asks Git's credential helper for the GitHub host (`GITHUB_API_URL` points it at GitHub Enterprise). A few optional features still call outside tools when they are present: footprint tracing runs the job under Linux `strace`, and the .NET program map builds with the `dotnet` SDK. Per-function selection for JavaScript and TypeScript (`--symbols`) reads those files with lit's own tokenizer, so it needs no parser; it still relies on Bun to run your tests and write the `lcov` coverage report that says which functions ran (put `{lcov}` where `bun test` takes its coverage arguments).
+Use Git 2.48 or later for repository operations. The binary talks directly to GitHub. That client uses the token in `GH_TOKEN` or `GITHUB_TOKEN`, or else asks Git's credential helper for the GitHub host (`GITHUB_API_URL` points it at GitHub Enterprise). A few optional features still call outside tools when they are present: footprint tracing runs the job under Linux `strace`, and the .NET program map builds with the `dotnet` SDK. Per-function selection for JavaScript and TypeScript (`--symbols`) reads those files with lit's own tokenizer, so it needs no parser; it still relies on Bun to run your tests and write the `lcov` coverage report that says which functions ran (put `{lcov}` where `bun test` takes its coverage arguments).
 
 ```sh
-python -m pip install .
 git clone --bare https://github.com/OWNER/REPO.git batch.git
-concurrent-merge collect OWNER/REPO --branch main --repo batch.git --out queue.json
-concurrent-merge run queue.json --repo batch.git --state batch-state --test ./run-full-suite
+lit collect OWNER/REPO --branch main --repo batch.git --out queue.json
+lit run queue.json --repo batch.git --state batch-state --test ./run-full-suite
 ```
 
 Use the repository's full test command in place of `./run-full-suite`. The existing runner can invoke collection whenever it becomes available. One call reads every page of the GitHub merge queue immediately. Arrivals during validation belong to the next collection. An installation with a different readiness signal can supply the same snapshot format from its review system.
@@ -69,9 +76,9 @@ Use the repository's full test command in place of `./run-full-suite`. The exist
 When readiness is decided by people or a coordinator rather than a merge queue, name the changes:
 
 ```sh
-concurrent-merge collect OWNER/REPO --repo batch.git --out queue.json --prs 133 134 135
-concurrent-merge collect OWNER/REPO --repo batch.git --out queue.json --label lit-ready
-concurrent-merge collect OWNER/REPO --repo batch.git --out queue.json --min-reviews 2
+lit collect OWNER/REPO --repo batch.git --out queue.json --prs 133 134 135
+lit collect OWNER/REPO --repo batch.git --out queue.json --label lit-ready
+lit collect OWNER/REPO --repo batch.git --out queue.json --min-reviews 2
 ```
 
 Each reads the open, non-draft PRs against `--branch` and their current heads. `--min-reviews K` counts distinct reviewers whose latest review approves the current head, so a push after approval drops a PR until it is approved again. The rules combine: `--label lit-ready --min-reviews 1` takes labelled PRs with at least one approval. A PR named with `--prs` that is closed, a draft, against another branch or outside the other rules stops the collection with an error rather than being skipped. The snapshot records the rules as `selection`, and `land` checks the same rules again before it pushes.
@@ -113,7 +120,7 @@ When lit meets a code file in a language it has no reader for, it says so and as
 A pending PR contributes none of its files to the candidate. Other PRs continue. Each JSON file under `batch-state/conflicts` identifies the path, Git stage blobs and modes, incoming PR revision, and participants. An author can read an input with `git -C batch.git cat-file blob OBJECT_ID`. Agents exchange proposed replacement bytes through their existing communication channel, then each records its agreement through the local adapter.
 
 ```sh
-concurrent-merge agree CONFLICT_ID "PARTICIPANT_FROM_JSON" agreed-file --repo batch.git --state batch-state
+lit agree CONFLICT_ID "PARTICIPANT_FROM_JSON" agreed-file --repo batch.git --state batch-state
 ```
 
 Run the snapshot again after agreement, or collect again if the target moved. Every listed participant must vote for the same blob. The votes bind to the conflicting inputs and the incoming revision. Distinct PRs retain distinct votes even when the same GitHub account opened both. Rename, delete, and type conflicts require a revised PR. The filesystem adapter assumes a trusted coordinator attributes each vote to its participant. Agent identity verification and network delivery belong to the hosting integration.
@@ -125,7 +132,7 @@ Run the snapshot again after agreement, or collect again if the target moved. Ev
 For a GitHub target that accepts an aggregate PR as its unit of review, submit the tested commit as a draft batch PR. This pushes one new topic branch. lit rechecks the queued source revisions and their ancestry. If the target advanced during validation, the combined tree must still match the tested tree byte for byte. Original heads already incorporated into the target are recorded separately. Repeating the command recovers an existing open PR for the same head. Mark the draft ready after review and use the repository's ordinary GitHub merge queue.
 
 ```sh
-concurrent-merge propose batch-state/runs/BATCH/result.json --repo batch.git --head lit/batch-example
+lit propose batch-state/runs/BATCH/result.json --repo batch.git --head lit/batch-example
 ```
 
 A batch collected with `--prs`, `--label` or `--min-reviews` has no merge queue to recheck, so `propose` rechecks the same rules instead, as `land` does, and the draft PR says it is for review rather than for the merge queue. Like `collect`, `propose` falls back to the REST API to find and open its PR when GitHub GraphQL is refused.
@@ -135,7 +142,7 @@ Before opening a new PR, lit looks for a native GitHub merge group with the exac
 `run` prints a receipt path and leaves the target alone. A partial batch returns exit 1 and records its passing subset. To publish that subset explicitly, use the receipt from the operator's trusted state directory.
 
 ```sh
-concurrent-merge land batch-state/runs/BATCH/result.json --repo batch.git
+lit land batch-state/runs/BATCH/result.json --repo batch.git
 ```
 
 `land` checks the retained tested ref, verifies ancestry, rereads queue membership and exact PR heads, and uses a lease on the original target SHA for one push. GitHub applies the repository's branch rules. The lease atomically guards the target ref. Use `propose` when a repository requires GitHub's own merge-queue transaction.
@@ -147,7 +154,7 @@ GitHub's merge queue tests a few groups at a time, so a repository that agents c
 A PR is ready when it carries the label (default `lit-ready`), comes from a branch in the same repository, passes the required check on its current head, and has no unresolved review threads. Only people with triage access can add a label, and a PR from a fork is never batched. The label hands the PR to lit: if its native auto-merge is on and GitHub has not queued it yet, the batcher turns auto-merge off, says so in a comment on the PR, and batches it. Remove the label to merge a PR on its own. Each pass pins ready heads under `refs/heads/lit/ready/N`, builds one batch PR, enqueues it, and on a failure splits the batch to find the PR that broke it. All state lives in refs under `refs/heads/lit/`, so a pass that stops anywhere is resumed by the next one.
 
 ```sh
-concurrent-merge intake OWNER/REPO --context "CI / tests" tick --label lit-ready
+lit intake OWNER/REPO --context "CI / tests" tick --label lit-ready
 ```
 
 `tick` never sleeps: it returns while GitHub checks a batch, and the next call carries on. Run it on a schedule and when the required check finishes. The `actions/batcher` action does this in a GitHub workflow:
@@ -182,8 +189,8 @@ Use a GitHub App token: branches and PRs created with the workflow's own `GITHUB
 `trace` runs one job under `strace` in a fresh detached checkout and writes a footprint. Every path the job opened, executed, inspected or listed before it wrote that path counts as an input. Checkout inputs are recorded as the traced commit's Git entries: file modes and blob IDs, directory listings, and paths the job looked for and did not find. Files read outside the checkout are hashed, and environment variables are recorded as hashes. Reads of the checkout's own `.git` mark the job as revision-specific, and network connections are listed.
 
 ```sh
-concurrent-merge trace --repo batch.git --commit TESTED_SHA --out portal.footprint.json --test ./run-portal-tests
-concurrent-merge reuse portal.footprint.json --repo batch.git --candidate NEXT_SHA [NEXT_SHA ...]
+lit trace --repo batch.git --commit TESTED_SHA --out portal.footprint.json --test ./run-portal-tests
+lit reuse portal.footprint.json --repo batch.git --candidate NEXT_SHA [NEXT_SHA ...]
 ```
 
 `reuse` compares each candidate's tree with the footprint and prints `reusable` with the expected exit code, or `run` with the inputs that differ. It executes nothing unless you ask. Add `--environment` to compare the current environment and `--host` to compare the toolchain files on this machine. Add `--verify` to run the job on each candidate as well and report whether the prediction matched the actual exit code. Use `--ignore-env PATTERN` at trace time for variables that legitimately change per run, such as a run ID, and only after confirming the job does not read them.
@@ -195,9 +202,9 @@ A footprint is an observation of one execution under Linux `strace`. It does not
 A large suite rarely reuses as a whole, because almost every change touches something one of its files reads. `trace-units` keeps a footprint for each test file instead, and `select` lists the files a candidate must run.
 
 ```sh
-concurrent-merge trace-units --workdir . --cwd web --units-file test-files.txt \
+lit trace-units --workdir . --cwd web --units-file test-files.txt \
   --each 'bun test --timeout=15000 ./{}' --out units.json
-concurrent-merge select units.json --workdir . --discover 'web/*.test.*' --strip web/ \
+lit select units.json --workdir . --discover 'web/*.test.*' --strip web/ \
   --host --list to-run.txt
 ```
 
@@ -208,15 +215,15 @@ With `--each`, every unit runs as its own command under its own trace, one after
 A machine that ran a job's files with `cached-units` can hand its passing records to CI, so the merge runs only what those records do not cover. Each proof holds the records written for one commit, the repository, the tree and the container image, and is signed with `ssh-keygen`:
 
 ```sh
-concurrent-merge proof pack --store /var/lib/lit --job unit --repository OWNER/REPO --image "$IMAGE" --out proof.json.gz
-concurrent-merge proof sign proof.json.gz --key ~/.ssh/lit_proof.pub   # an ssh-agent or hardware key works
-concurrent-merge proof push proof.json.gz --remote https://github.com/OWNER/REPO.git
+lit proof pack --store /var/lib/lit --job unit --repository OWNER/REPO --image "$IMAGE" --out proof.json.gz
+lit proof sign proof.json.gz --key ~/.ssh/lit_proof.pub   # an ssh-agent or hardware key works
+lit proof push proof.json.gz --remote https://github.com/OWNER/REPO.git
 ```
 
 The proof is pushed as `refs/heads/lit/proof/<commit>/<id>`. CI takes every proof for the commits it is about to merge and gives the result to `cached-units --proof-store`:
 
 ```sh
-concurrent-merge proof take --remote https://github.com/OWNER/REPO.git --repo . --repository OWNER/REPO \
+lit proof take --remote https://github.com/OWNER/REPO.git --repo . --repository OWNER/REPO \
   --commit "$PR_HEAD" --signers-at origin/main --image "$IMAGE" --into /tmp/proofs
 ```
 
@@ -230,17 +237,17 @@ Trust is earned rather than granted by the key. Two things make one machine's wo
 CI keeps the book at `refs/heads/lit/audits`, fetched before the run and pushed after it. The push fails rather than overwrite a newer book:
 
 ```sh
-concurrent-merge proof book-pull book.json --remote https://github.com/OWNER/REPO.git
-concurrent-merge proof take ... --quorum 2 --audit-book book.json --into /tmp/proofs
-concurrent-merge cached-units ... --proof-store /tmp/proofs --audit-book book.json
-concurrent-merge proof book-push book.json --remote https://github.com/OWNER/REPO.git
+lit proof book-pull book.json --remote https://github.com/OWNER/REPO.git
+lit proof take ... --quorum 2 --audit-book book.json --into /tmp/proofs
+lit cached-units ... --proof-store /tmp/proofs --audit-book book.json
+lit proof book-push book.json --remote https://github.com/OWNER/REPO.git
 ```
 
 Run the jobs that write the book in one concurrency group, and let only CI's token push `refs/heads/lit/audits` (a ruleset can do that), because whoever can write the book can clear a signer's record.
 
 ## Predict a landing
 
-To predict a landing before admission, run `concurrent-merge preview OWNER/REPO PR_NUMBER [PR_NUMBER ...] --repo batch.git --out observation.json`. It combines the source revisions with the latest assigned queue predecessor and records the source snapshot, queue snapshot, computed time and predicted tree. It also reports earlier entries whose commits are still unknown. After fetching the protected landing, compare it with the saved prediction using `python -m concurrent_merge.projection --repo batch.git --observation observation.json --landed LANDED_SHA`. Prediction uses local Git objects and reads GitHub without requesting CI or publishing a check.
+To predict a landing before admission, run `lit preview OWNER/REPO PR_NUMBER [PR_NUMBER ...] --repo batch.git --out observation.json`. It combines the source revisions with the latest assigned queue predecessor and records the source snapshot, queue snapshot, computed time and predicted tree. It also reports earlier entries whose commits are still unknown. After fetching the protected landing, compare it with the saved prediction using `python -m concurrent_merge.projection --repo batch.git --observation observation.json --landed LANDED_SHA`. Prediction uses local Git objects and reads GitHub without requesting CI or publishing a check.
 
 To measure how often early assembly predicts the eventual protected tree, run `python -m concurrent_merge.projection --repo batch.git --queue archived-queue.json --sources ready.json --landed LANDED_SHA`. Use a queue snapshot from `collect` and exact source heads from the same observation. The replay builds trial Git objects on then-current main and on the latest assigned predecessor before the selected sources. It reports unresolved preceding entries, tree equality and source ancestry. It creates no tested ref or check status.
 
@@ -253,16 +260,16 @@ Run the engine regression tests with `python -m unittest discover -s tests -v`.
 To see what it would decide on your own batches without changing anything, pass a unit store to `run`:
 
 ```
-concurrent-merge run queue.json --repo batch.git --state state \
+lit run queue.json --repo batch.git --state state \
   --shadow-store units --shadow-job suite --test python3 -m unittest
 ```
 
-lit then writes `shadow.json` next to the run's `result.json`: the groups Frontier would have formed, the tests each would have had to run, and which changes it would have landed without running anything that the full suite then failed. `concurrent-merge shadow queue.json --repo batch.git --store units --job suite` gives the same decision without running anything. Add `--shadow-proofs DIR` (or `--proofs DIR`) with a store that `proof take` filled, and each PR's own signed CI run counts as evidence for it too.
+lit then writes `shadow.json` next to the run's `result.json`: the groups Frontier would have formed, the tests each would have had to run, and which changes it would have landed without running anything that the full suite then failed. `lit shadow queue.json --repo batch.git --store units --job suite` gives the same decision without running anything. Add `--shadow-proofs DIR` (or `--proofs DIR`) with a store that `proof take` filled, and each PR's own signed CI run counts as evidence for it too.
 
 Give the shadow the same `--discover` patterns (and `--strip`) as `cached-units`, or `--shadow-discover` and `--shadow-strip` on `run`, and it also lists test files with no passing footprint as `unrecorded`. A file a PR adds must run with that PR's group, and one already on main leaves nothing landing unrun. lit records its own suite this way, one process per file:
 
 ```
-concurrent-merge cached-units --store units --job unit --workdir . \
+lit cached-units --store units --job unit --workdir . \
   --each 'env PYTHONPATH=tests python3 -m unittest tests/{}' --discover 'tests/test_*.py' --strip tests/
 ```
 
