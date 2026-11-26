@@ -57,10 +57,34 @@ def slot_merge(base, ours, theirs, shared):
         return base[:a1] + r1 + r2 + base[a1:]
     if shared:
         return None
+    for run, insertion in (((a1, b1, r1), (a2, b2, r2)), ((a2, b2, r2), (a1, b1, r1))):
+        merged = beside(base, run, insertion)
+        if merged is not None:
+            return merged
     if b1 < a2:
         return base[:a1] + r1 + base[b1:a2] + r2 + base[b2:]
     if b2 < a1:
         return base[:a2] + r2 + base[b2:a1] + r1 + base[b1:]
+    return None
+
+
+def beside(base, run, insertion):
+    """Units one side inserted right next to units the other side replaced, or None.
+
+    A rename or rewrite of a declaration is a replaced run; an added declaration
+    just before or after it is an insertion that touches the run. Git's line merge
+    calls that a conflict, but the order is not in doubt: the insertion stays on
+    the side of the run where its author put it. Both edges where they meet must
+    be whole units, so gap text such as a comment never changes which declaration
+    it sits beside.
+    """
+    (a, b, r), (c, d, q) = run, insertion
+    if c != d or a == b or not r or not any(type(piece) is tuple for piece in q):
+        return None
+    if c == a and type(base[a]) is tuple and type(r[0]) is tuple:
+        return base[:a] + q + r + base[b:]
+    if c == b and type(base[b - 1]) is tuple and type(r[-1]) is tuple:
+        return base[:a] + r + q + base[b:]
     return None
 
 
