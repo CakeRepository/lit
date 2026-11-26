@@ -40,7 +40,7 @@ fn sections(
         let children = sections(headings, index, *level, total);
         let end = headings.get(*index).map_or(total, |row| row.2);
         nodes.push(Node {
-            key: key.clone(),
+            key: key.encode_utf16().collect(),
             start: *start,
             end,
             children,

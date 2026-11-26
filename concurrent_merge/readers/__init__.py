@@ -56,6 +56,22 @@ def reader_for(path):
     return READERS.get(Path(path).suffix.lower())
 
 
+def native_outline(program, suffix, blob):
+    run = subprocess.run([program, "--internal-outline", suffix], input=blob,
+                         stdout=subprocess.PIPE, check=True)
+    rows = json.loads(run.stdout)
+    if rows is None:
+        return None
+    nodes = []
+    levels = [nodes]
+    for depth, key, start, end in rows:
+        del levels[depth + 1:]
+        children = []
+        levels[depth].append((key, start, end, children))
+        levels.append(children)
+    return nodes
+
+
 def outline(path, blob):
     """(blob, root node) for a file lit has a reader for, or None."""
     reader = reader_for(path)
@@ -64,9 +80,7 @@ def outline(path, blob):
     try:
         suffix = Path(path).suffix.lower()
         if native_program and suffix in native_suffixes:
-            run = subprocess.run([native_program, "--internal-outline", suffix],
-                                 input=blob, stdout=subprocess.PIPE, check=True)
-            nodes = json.loads(run.stdout)
+            nodes = native_outline(native_program, suffix, blob)
         else:
             nodes = reader.outline(blob, suffix)
     except (RecursionError, MemoryError, ValueError, UnicodeError):

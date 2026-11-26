@@ -1,29 +1,50 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
+mod json_reader;
 mod markdown;
 
-use crate::json::{self, Value};
+use std::fmt::Write;
 use std::io::{self, Read};
 
 struct Node {
-    key: String,
+    // JSON member names can contain escaped, unpaired UTF-16 surrogates.
+    key: Vec<u16>,
     start: usize,
     end: usize,
     children: Vec<Node>,
 }
 
-impl Node {
-    fn into_json(self) -> Value {
-        Value::Array(vec![
-            Value::String(self.key),
-            (self.start as u64).into(),
-            (self.end as u64).into(),
-            Value::Array(self.children.into_iter().map(Node::into_json).collect()),
-        ])
+fn write_nodes(nodes: &[Node], out: &mut String) {
+    // Preorder rows keep a deep source outline shallow in the JSON transport.
+    let mut levels = vec![nodes.iter()];
+    out.push('[');
+    let mut first = true;
+    while let Some(siblings) = levels.last_mut() {
+        let Some(node) = siblings.next() else {
+            levels.pop();
+            continue;
+        };
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        write!(out, "[{},\"", levels.len() - 1).unwrap();
+        for &unit in &node.key {
+            match unit {
+                0x20..=0x7e if unit != 0x22 && unit != 0x5c => out.push(unit as u8 as char),
+                _ => write!(out, "\\u{unit:04x}").unwrap(),
+            }
+        }
+        write!(out, "\",{},{}]", node.start, node.end).unwrap();
+        levels.push(node.children.iter());
     }
+    out.push(']');
 }
 
 type Reader = fn(&str) -> Option<Vec<Node>>;
-const READERS: &[(&[&str], Reader)] = &[(&[".md", ".markdown"], markdown::outline)];
+const READERS: &[(&[&str], Reader)] = &[
+    (&[".md", ".markdown"], markdown::outline),
+    (&[".json"], json_reader::outline),
+];
 
 pub fn suffixes() -> Vec<&'static str> {
     READERS
@@ -50,9 +71,12 @@ pub fn command(suffix: &str) -> i32 {
         eprintln!("lit: could not read the source: {error}");
         return 2;
     }
-    let result = outline(suffix, &bytes).map_or(Value::Null, |nodes| {
-        Value::Array(nodes.into_iter().map(Node::into_json).collect())
-    });
-    println!("{}", json::pretty(&result));
+    if let Some(nodes) = outline(suffix, &bytes) {
+        let mut result = String::new();
+        write_nodes(&nodes, &mut result);
+        println!("{result}");
+    } else {
+        println!("null");
+    }
     0
 }

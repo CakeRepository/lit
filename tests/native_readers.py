@@ -1,6 +1,5 @@
 """Run the existing language suites with the native readers, and compare byte extents."""
 import importlib
-import json
 import os
 from pathlib import Path
 import pkgutil
@@ -38,9 +37,9 @@ def suite(binary):
                     if expected is not None:
                         samples.append(expected)
                 for blob in set(samples):
-                    actual = subprocess.check_output([binary, "--internal-outline", ext], input=blob)
+                    actual = readers.native_outline(binary, ext, blob)
                     expected = None if b"\x00" in blob else language.outline(blob, ext)
-                    assert json.loads(actual) == json.loads(json.dumps(expected)), (ext, blob[:100])
+                    assert actual == expected, (ext, blob[:100])
             tests.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(cls))
     if not suffixes or exercised != set(suffixes):
         raise ValueError(f"Missing native conformance suite for {set(suffixes) - exercised}")
