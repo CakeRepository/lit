@@ -142,6 +142,26 @@ class PythonMergeTests(unittest.TestCase):
         theirs = base.replace(b"X = 1\n", b"X = 1\nZ = 3\n")
         self.assertIsNone(python_merge([base, ours, theirs]))
 
+    def test_a_definition_added_beside_a_renamed_one_merges(self):
+        renamed = BASE.replace(b"def second():", b"def two():")
+        before = BASE.replace(b"\n\n\ndef second", b"\n\n\ndef extra():\n    return 0\n\n\ndef second")
+        self.assertEqual(
+            python_merge([BASE, renamed, before]),
+            renamed.replace(b"\n\n\ndef two", b"\n\n\ndef extra():\n    return 0\n\n\ndef two"),
+        )
+        self.assertEqual(python_merge([BASE, before, renamed]), python_merge([BASE, renamed, before]))
+        after = BASE.replace(b"return 2\n", b"return 2\n\n\ndef extra():\n    return 0\n")
+        self.assertEqual(
+            python_merge([BASE, renamed, after]),
+            renamed.replace(b"return 2\n", b"return 2\n\n\ndef extra():\n    return 0\n"),
+        )
+
+    def test_a_definition_added_beside_a_changed_comment_is_a_conflict(self):
+        base = b"def a():\n    pass\n\n# about b\ndef b():\n    pass\n"
+        ours = base.replace(b"# about b", b"# all about b")
+        theirs = base.replace(b"# about b\n", b"# about b\ndef c():\n    pass\n\n")
+        self.assertIsNone(python_merge([base, ours, theirs]))
+
     def test_registration(self):
         self.assertTrue(has_driver("pkg/mod.py"))
         self.assertFalse(has_driver("web/app.rb"))
