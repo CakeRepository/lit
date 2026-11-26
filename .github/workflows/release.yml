@@ -1,8 +1,12 @@
 name: Release
-# A v* tag builds lit for every platform and publishes the binaries with their
-# SHA-256 sums as a GitHub release. Run it by hand to build without publishing.
+# lit releases itself: when main's VERSION names a version that has no tag yet, this builds lit for
+# every platform and publishes the binaries with their SHA-256 sums as that release, tagged at that
+# commit. A v* tag pushed by hand still publishes its own release. Run it by hand to build without
+# publishing.
 on:
   push:
+    branches: [main]
+    paths: [VERSION]
     tags: ["v*"]
   workflow_dispatch:
 permissions:
@@ -10,7 +14,41 @@ permissions:
 env:
   RUST_VERSION: "1.97.0"
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The tag to publish: a pushed v* tag, or main's VERSION when no tag has that name yet.
+      # Nothing for a manual run, or when VERSION names a release that already exists.
+      - id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag=""
+          if [[ "$EVENT" == push && "$REF_TYPE" == tag ]]; then
+            tag="$REF_NAME"
+          elif [[ "$EVENT" == push && "$REF_NAME" == main ]]; then
+            version=$(tr -d '[:space:]' < VERSION)
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::VERSION must read vMAJOR.MINOR.PATCH, not '$version'"; exit 1; }
+            # Any trouble reading the tags fails the run rather than publishing twice.
+            found=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$version")
+            if [[ -n "$found" ]]; then
+              echo "::notice::$version is already tagged; nothing to release."
+            else
+              tag="$version"
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
   build:
+    needs: plan
     # Each target builds on a runner of its own OS, so no cross linker is needed.
     strategy:
       fail-fast: true
@@ -45,7 +83,7 @@ jobs:
       - run: cargo test --locked
       - name: Build
         env:
-          LIT_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.sha) }}
+          LIT_VERSION: ${{ needs.plan.outputs.tag || format('dev-{0}', github.sha) }}
         run: |
           set -euo pipefail
           cargo build --release --locked --target ${{ matrix.target }}
@@ -63,8 +101,8 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/
   publish:
-    if: github.ref_type == 'tag'
-    needs: build
+    if: needs.plan.outputs.tag != ''
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -78,9 +116,12 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           (cd dist && sha256sum lit-* > SHA256SUMS && cat SHA256SUMS)
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "lit $TAG" --verify-tag \
+          # A pushed tag must already exist; a VERSION release tags the commit it was built from.
+          where=(--verify-tag); [[ "$REF_TYPE" == tag ]] || where=(--target "$GITHUB_SHA")
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "lit $TAG" "${where[@]}" \
             --notes "One binary per platform. Check a download against SHA256SUMS. All merge, intake and proof commands run natively. Use Git 2.48 or later for repository operations."

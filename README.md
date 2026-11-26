@@ -42,6 +42,8 @@ release=https://github.com/CakeRepository/lit/releases/download/v0.1.1
 
 For another platform, download its asset and compare its SHA-256 with the matching entry in `SHA256SUMS`. On macOS use `shasum -a 256` and on Windows use `Get-FileHash -Algorithm SHA256`. Rename the verified executable to `lit` or `lit.exe` and place it on your path. To build from source, run `cargo build --release --locked`.
 
+lit releases itself. When a change to the `VERSION` file lands on main and names a version with no tag yet, the Release workflow builds every platform and publishes that release, tagged at that commit. A `v*` tag pushed by hand publishes its own release the same way.
+
 The `actions/batcher` and `actions/cached-run` composite actions download the release to a private runner temp directory and verify the SHA-256 pinned in the action checkout. The [release notes](https://github.com/CakeRepository/lit/releases/tag/v0.1.1) list the action commit to pin in workflows.
 
 All 19 operational commands run in the Rust binary. Contributors can compare one with the Python 3.12+ reference by setting `LIT_REFERENCE` to an absolute path to a trusted copy of the lit source at the same revision. From a fixture directory, `lit parity COMMAND ...` compares exit codes, output, files, Git refs and batch commit IDs in two private copies. For intake fixtures, [the queue replay tests](tests/test_native_intake.py) show how to record GitHub responses and compare outgoing mutations without changing a live repository.
