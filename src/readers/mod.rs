@@ -1,6 +1,7 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
 mod json_reader;
 mod markdown;
+mod yaml;
 
 use std::fmt::Write;
 use std::io::{self, Read};
@@ -44,6 +45,7 @@ type Reader = fn(&str) -> Option<Vec<Node>>;
 const READERS: &[(&[&str], Reader)] = &[
     (&[".md", ".markdown"], markdown::outline),
     (&[".json"], json_reader::outline),
+    (&[".yaml", ".yml"], yaml::outline),
 ];
 
 pub fn suffixes() -> Vec<&'static str> {
