@@ -102,7 +102,13 @@ def add(blob, text):
 
 class PowerShellReaderTests(ReaderConformance, unittest.TestCase):
     PATH = "tools/Manifest.psm1"
-    SAMPLES = (MODULE, PESTER, TINY, MODULE.replace(b"\n", b"\r\n"))
+    SAMPLES = (
+        MODULE, PESTER, TINY, MODULE.replace(b"\n", b"\r\n"),
+        "Describe -Name ‘it’’s ready’ { It “handles 😀” { } }\n".encode(),
+        b"Describe -TestName scenario -Cases @{ X=1 }\nfunction actual {}\n",
+        b'function f { "nested $( "inner $( 1 )" )" }\n',
+        b'class X { X() {}\n X([int]$n) {}\n [int] ${a b} = 1\n}\n',
+    )
     KEYS = (
         (0, ["using namespace system.io", "using module ./helpers.psm1", "param", "function get-manifest",
              "function set-manifest", "function select-name", "class widget", "enum color"]),
