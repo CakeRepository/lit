@@ -67,6 +67,10 @@ class JsonReaderTests(ReaderConformance, unittest.TestCase):
         b'[1, 2, 3]',
         b'"text"',
         b'{"a": NaN}',
+        br'{"items": [{"\u0061": 1, "a": 2}]}',
+        b'{"x": 01}',
+        b'{"x": 1.}',
+        b'{"x": 1e+}',
         b'{"a": "open}',
         b'\xff\xfe{"a": 1}',
         b'',
@@ -125,6 +129,21 @@ class JsonReaderTests(ReaderConformance, unittest.TestCase):
 
     def test_suffix_is_json_only(self):
         self.assertIsNone(readers.reader_for("settings.jsonc"))
+
+    def test_escaped_surrogate_keys_remain_distinct(self):
+        blob = br'{"\ud800": 1, "\ud801": 2, "\ud800\udc00": 3}'
+        nodes = readers.outline(self.PATH, blob)[1][3]
+        self.assertEqual([n[0] for n in nodes], ["\ud800", "\ud801", "\U00010000"])
+
+    def test_deep_json_preserves_byte_extents(self):
+        depth = 600
+        blob = b'{"a":' * depth + b'0' + b'}' * depth
+        nodes = readers.outline(self.PATH, blob)[1][3]
+        for level in range(depth):
+            ((key, start, end, nodes),) = nodes
+            self.assertEqual((key, start, end), ("a", 5 * level + 1, len(blob) - level - 1))
+        self.assertEqual(nodes, [])
+        self.assertIsNone(readers.outline(self.PATH, b'{"a":' * 2000 + b'0' + b'}' * 2000))
 
 
 if __name__ == "__main__":
