@@ -10,7 +10,7 @@
 #   - lists lit's own code folders (concurrent_merge/ and actions/) before the step, and on exit removes
 #     anything new in them, gives anything not owned by the runner's user back to that user, warns, and fails
 #     the step if something still can't be removed, naming the command that fixes the runner;
-#   - hands files the step created under the runner's temp and home folders back to the folder's owner, so the
+#   - hands files the step created under the runner's workspace, temp and home folders back to the folder's owner, so the
 #     runner can clean them too.
 # A job that runs as the runner's own user (no container) has nothing to hand back and nothing changes.
 
@@ -18,8 +18,10 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPYCACHEPREFIX="${RUNNER_TEMP:-/tmp}/lit-pycache"
 
 lit_guard_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd -P)"
-lit_guard_owner="$(stat -c %u "$lit_guard_root")"
-lit_guard_group="$(stat -c %g "$lit_guard_root")"
+lit_guard_owner_of() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }
+lit_guard_group_of() { stat -c %g "$1" 2>/dev/null || stat -f %g "$1"; }
+lit_guard_owner="$(lit_guard_owner_of "$lit_guard_root")"
+lit_guard_group="$(lit_guard_group_of "$lit_guard_root")"
 lit_guard_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/lit-guard.XXXXXX")"
 lit_guard_list() { (cd "$lit_guard_root" && find concurrent_merge actions -print | LC_ALL=C sort); }
 lit_guard_list > "$lit_guard_dir/before"
@@ -43,12 +45,21 @@ lit_guard_finish() {
     echo "::error title=lit left files the runner can't remove::These are not owned by the runner's user, so this runner's next job will fail at Set up job: $(echo "$left" | tr '\n' ' '). As root on the runner, run: rm -rf $lit_guard_root"
     status=1
   fi
-  # Hand back what this step created under the runner's own temp and home folders.
+  # Hand back what this step created under the runner's workspace, temp and home folders.
   if [ "$(id -u)" = "0" ]; then
-    for d in "${RUNNER_TEMP:-}" "${HOME:-}"; do
+    for d in "${GITHUB_WORKSPACE:-}" "${RUNNER_TEMP:-}" "${HOME:-}"; do
       [ -n "$d" ] && [ -d "$d" ] || continue
-      [ "$(stat -c %u "$d")" != "0" ] || continue
-      find "$d" -newer "$lit_guard_dir/marker" -uid 0 -exec chown -h "$(stat -c %u:%g "$d")" {} + 2>/dev/null
+      [ "$(lit_guard_owner_of "$d")" != "0" ] || continue
+      # A new file can share the marker's timestamp on coarse filesystems.
+      find "$d" -uid 0 -exec bash -c '
+        marker=$1 owner=$2
+        shift 2
+        changed=()
+        for path do
+          [[ "$marker" -nt "$path" ]] || changed+=("$path")
+        done
+        if (( ${#changed[@]} )); then chown -h "$owner" "${changed[@]}"; fi
+      ' bash "$lit_guard_dir/marker" "$(lit_guard_owner_of "$d"):$(lit_guard_group_of "$d")" {} + 2>/dev/null
     done
   fi
   rm -rf "$lit_guard_dir"
