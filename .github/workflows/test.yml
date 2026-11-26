@@ -43,6 +43,8 @@ jobs:
         run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_end_to_end.py -v
       - name: Native reader conformance
         run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B tests/native_readers.py
+      - name: Native batch assembly
+        run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_engine.py
       # lit as root in a container must leave nothing the runner cannot remove.
       - name: Root hygiene
         run: scripts/root-hygiene.sh "$RUNNER_TEMP/lit-linux-amd64"

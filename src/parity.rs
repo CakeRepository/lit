@@ -93,10 +93,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         None
     };
     let mut sides = Vec::new();
-    for (name, impl_) in [
-        ("python", "python"),
-        ("rust", if o.native { "rust" } else { "python" }),
-    ] {
+    for (name, impl_) in [("python", "python"), ("rust", "rust")] {
         let dir = work.join(name);
         copy_tree(&o.source, &dir).map_err(|e| fail(format!("copy inputs: {e}")))?;
         let mut cmd = Command::new(&o.program);
