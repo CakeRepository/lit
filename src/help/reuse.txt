@@ -1,0 +1,20 @@
+usage: concurrent-merge reuse [-h] --repo REPO --candidate CANDIDATE
+                              [CANDIDATE ...] [--environment] [--host]
+                              [--allow-network] [--verify] [--out OUT]
+                              footprint
+
+positional arguments:
+  footprint
+
+options:
+  -h, --help            show this help message and exit
+  --repo REPO
+  --candidate CANDIDATE [CANDIDATE ...]
+  --environment         Also compare this process's environment with the
+                        record
+  --host                Also compare files read outside the checkout on this
+                        machine
+  --allow-network
+  --verify              Also run the job on each candidate and score the
+                        prediction
+  --out OUT

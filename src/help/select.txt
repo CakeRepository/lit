@@ -1,0 +1,28 @@
+usage: concurrent-merge select [-h] [--repo REPO] [--candidate CANDIDATE]
+                               [--workdir WORKDIR] [--discover GLOB]
+                               [--strip STRIP] [--listings {exact,names}]
+                               [--environment] [--host] [--allow-network]
+                               [--out OUT] [--list LIST]
+                               bundle
+
+positional arguments:
+  bundle
+
+options:
+  -h, --help            show this help message and exit
+  --repo REPO
+  --candidate CANDIDATE
+  --workdir WORKDIR
+  --discover GLOB       Unit files in the candidate tree; one with no
+                        footprint runs (repeatable)
+  --strip STRIP         Prefix to remove from a found path to get its unit
+                        name
+  --listings {exact,names}
+                        names: a directory change matters only for names a
+                        unit looked up there, unless the unit opened most of
+                        the directory
+  --environment
+  --host
+  --allow-network
+  --out OUT
+  --list LIST           Write the units to run here, one per line

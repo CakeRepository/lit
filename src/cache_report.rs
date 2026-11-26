@@ -11,14 +11,14 @@ type Result<T> = std::result::Result<T, String>;
 const HELP: &str = include_str!("help/cache-report.txt");
 
 #[derive(Default)]
-struct Seconds {
+pub(crate) struct Seconds {
     integer: i128,
     float: bool,
     sum: f64,
     correction: f64,
 }
 impl Seconds {
-    fn add(&mut self, value: Option<&Value>) -> Result<()> {
+    pub(crate) fn add(&mut self, value: Option<&Value>) -> Result<()> {
         let Some(Value::Number(n)) = value else {
             return if value.is_some() {
                 Err("Expected a number of seconds".into())
@@ -47,7 +47,7 @@ impl Seconds {
         self.sum = total;
         Ok(())
     }
-    fn rounded(&self) -> Value {
+    pub(crate) fn rounded(&self) -> Value {
         Value::Number(if self.float {
             format!("{:.1}", self.sum + self.correction)
         } else {

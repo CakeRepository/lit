@@ -300,9 +300,9 @@ from concurrent_merge import engine; engine.native_program = readers.native_prog
 from concurrent_merge.cli import main; sys.exit(main())";
 
 /// Builds the Python process for args. dir is the folder extract made.
-pub fn command(python: &Path, dir: &Path, args: &[String]) -> Command {
+pub fn command(python: &Path, dir: &Path, args: &[String], python_only: bool) -> Command {
     let mut cmd = Command::new(python);
-    let binary = if std::env::var("LIT_IMPL").as_deref() == Ok("python") {
+    let binary = if python_only {
         None
     } else {
         std::env::current_exe().ok()

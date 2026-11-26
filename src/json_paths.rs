@@ -105,7 +105,7 @@ pub fn render(value: &Value) -> String {
 }
 
 /// The code points Python compares when sorting a JSON key, including lone surrogates.
-fn points(s: &str) -> impl Iterator<Item = u32> + '_ {
+pub(crate) fn points(s: &str) -> impl Iterator<Item = u32> + '_ {
     let mut chars = s.chars().peekable();
     std::iter::from_fn(move || {
         let c = chars.next()?;
@@ -129,6 +129,18 @@ pub fn utf8(s: &str) -> Result<String> {
     points(s)
         .map(|cp| char::from_u32(cp).ok_or_else(|| "Invalid Unicode unit name".to_owned()))
         .collect()
+}
+pub fn bytes(s: &str) -> Result<Vec<u8>> {
+    let mut result = Vec::new();
+    for cp in points(s) {
+        if (0xdc80..=0xdcff).contains(&cp) {
+            result.push((cp - 0xdc00) as u8);
+        } else {
+            let c = char::from_u32(cp).ok_or("Invalid filesystem path")?;
+            result.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+        }
+    }
+    Ok(result)
 }
 /// Byte-for-byte Python json.dumps(sort_keys=True), used for agreement digests
 /// and committed audit books. A pretty book has two spaces per level.

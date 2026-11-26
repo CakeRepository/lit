@@ -17,6 +17,13 @@ pub enum Value {
 }
 
 impl Value {
+    pub fn object(&self) -> Result<&BTreeMap<String, Value>, String> {
+        match self {
+            Self::Object(m) => Ok(m),
+            _ => Err("Expected a JSON object".into()),
+        }
+    }
+
     pub fn truthy(&self) -> bool {
         match self {
             Value::Null => false,

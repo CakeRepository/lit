@@ -519,5 +519,116 @@ class SignedProofCLI(unittest.TestCase):
             self.assertFalse((work / "bad").exists())
 
 
+class FootprintSelectionCLI(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        git(self.repo, "init", "-q", "-b", "main")
+        (self.repo / "src").mkdir()
+        (self.repo / "src/a.ts").write_text("pass")
+        (self.repo / "tests").mkdir()
+        for name in ("one", "two", "three"):
+            (self.repo / "tests" / name).write_text(name)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "recorded")
+        self.base = git(self.repo, "rev-parse", "HEAD")
+        self.tracked = {"src/a.ts": ["100644", git(self.repo, "rev-parse", "HEAD:src/a.ts")]}
+        self.unit = dict(exit_code=0, seconds=1.25, incomplete=[], network=[], reads_git_metadata=False,
+                         directories=["src"], absent=["src/a.tsx"], listings={}, untracked={}, external={})
+
+    def command(self, *args, code=0):
+        if os.environ.get("LIT_BIN"):
+            pair = lit(self.root, {}, "parity", *args)
+            self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+            self.assertIn(f"(exit {code})", pair.stdout)
+        proc = lit(self.root, {"LIT_PYTHON": str(self.root / "unavailable")}, *args)
+        self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout) if code != 2 else proc.stderr
+
+    def test_reuse_verifies_the_actual_checkout_and_scores_unsound_predictions(self):
+        manifest = dict(self.unit, kind="lit-job-footprint", version=1, commit=self.base,
+                        tracked=self.tracked, command=["sh", "-c", 'test "$(cat src/a.ts)" = pass'],
+                        ignored_environment=["*"], environment={})
+        def write(**updates):
+            (self.root / "record.json").write_text(json.dumps(dict(manifest, **updates)))
+        write()
+        (self.repo / "src/a.ts").write_text("fail")
+        (self.repo / "src/a.tsx").write_text("new")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "changed inputs")
+        args = ["reuse", "record.json", "--repo", "repo", "--candidate", self.base, "HEAD",
+                "--environment", "--host", "--out", "out/result.json"]
+        passed, changed = self.command(*args, code=1)
+        self.assertEqual(passed["checked"], ["checkout", "environment", "host"])
+        self.assertEqual(changed["reasons"], [{"kind": "changed", "path": "src/a.ts"},
+                                               {"kind": "appeared", "path": "src/a.tsx"}])
+        self.assertEqual(json.loads((self.root / "out/result.json").read_text()), [passed, changed])
+        import hashlib
+        feature = "ZZ_LIT_FOOTPRINT_FEATURE"
+        write(ignored_environment=["[!Z]*", *(k for k in os.environ if k.startswith("Z") and k != feature)],
+              environment={feature: hashlib.sha256(b"on").hexdigest()})
+        with patch.dict(os.environ, {feature: "on"}):
+            self.assertEqual(self.command(*args, code=1)[0]["verdict"], "reusable")
+        with patch.dict(os.environ, {feature: "off"}):
+            self.assertEqual(self.command(*args, code=1)[0]["reasons"], [{"kind": "environment", "name": feature}])
+        write(network=["AF_INET"], incomplete=["lost observation"], git_static={".git": "dir"},
+              reads_git_metadata=True, git_metadata=[".git/HEAD"], untracked={"build/input": "absent"},
+              external={"/etc/hosts": "wrong", str(self.root / "missing"): "wrong"})
+        changed = self.command(*args, code=1)[1]
+        self.assertEqual([r["kind"] for r in changed["reasons"]],
+                         ["incomplete", "network", "revision", "revision", "changed", "appeared", "untracked", "host"])
+        write(network=["AF_INET"])
+        self.assertEqual(self.command(*args, "--allow-network", code=1)[0]["verdict"], "reusable")
+        if shutil.which("strace"):
+            write()
+            passed, changed = self.command(*args, "--verify")
+            self.assertEqual([passed["actual_exit_code"], changed["actual_exit_code"]], [0, 1])
+            write(tracked={}, absent=[])
+            changed = self.command(*args, "--verify", code=1)[1]
+            self.assertFalse(changed["sound"])
+            self.assertEqual(changed["verdict"], "reusable")
+
+    def test_selects_new_changed_failed_and_legacy_name_lookups(self):
+        import hashlib
+        digest = lambda b: hashlib.sha256(b).hexdigest()
+        unit = dict(self.unit, tracked=list(self.tracked), external=[], listings={"src": digest(b"a.ts")},
+                    listing_keys={"src": ["a", "a.ts"]}, untracked={"deps/lock": digest(b"dep")})
+        bundle = dict(kind="lit-unit-footprints", version=1, commit=self.base, command=["sh", "tests"],
+                      units={"one": unit, "two": dict(unit, exit_code=2), "gone": unit},
+                      tracked=self.tracked, external={}, environment={}, ignored_environment=["*"],
+                      listing_children={"src": ["a.ts"]})
+        def write():
+            (self.root / "bundle.json").write_text(json.dumps(bundle))
+        write()
+        (self.repo / "deps").mkdir()
+        (self.repo / "deps/lock").write_text("dep")
+        (self.repo / "src/a.test.ts").write_text("irrelevant")
+        args = ["select", "bundle.json", "--workdir", "repo", "--listings", "names",
+                "--discover", "tests/[!x]*", "--strip", "tests/", "--host", "--environment",
+                "--out", "result.json", "--list", "list.txt"]
+        def select(*extra):
+            summary = self.command(*args, *extra)
+            result = json.loads((self.root / "result.json").read_text())
+            self.assertEqual(summary["run"], len(result["run"]))
+            self.assertEqual((self.root / "list.txt").read_text().splitlines(), result["run"])
+            return result
+        picked = select()
+        self.assertEqual(picked["run"], ["three", "two"])
+        self.assertEqual(picked["reusable"], ["one"])
+        self.assertEqual(picked["seconds_recorded_reusable"], 1.2)
+        self.assertEqual(select("--listings", "exact")["reasons"]["one"], [{"kind": "listing", "path": "src"}])
+        unit.pop("listing_keys")
+        unit["listing_lookups"] = {"src": ["a"]}
+        write()
+        self.assertEqual(select()["run"], ["one", "three", "two"])
+        (self.repo / "deps/lock").write_text("changed")
+        self.assertIn({"kind": "changed", "path": "deps/lock"}, select()["reasons"]["one"])
+        (self.repo / "src/a.ts").write_text("dirty")
+        self.assertIn("Tracked files differ", self.command(*args, code=2))
+
+
 if __name__ == "__main__":
     unittest.main()
