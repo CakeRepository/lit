@@ -40,6 +40,8 @@ jobs:
           fi
           rustup toolchain install "$RUST_VERSION" --profile minimal --target ${{ matrix.target }}
           rustup default "$RUST_VERSION"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
       - run: cargo test --locked
       - name: Build
         env:

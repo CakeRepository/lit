@@ -2,14 +2,17 @@
 name = "lit"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.85"
 license = "Apache-2.0"
 description = "lit lands many concurrent changes at once: one binary, no runtime to install"
 repository = "https://github.com/CakeRepository/lit"
 publish = false
 
-# No dependencies: lit has none today, and each one added later comes with a PR that says why.
 [dependencies]
+# The GitHub transport uses TLS and the system trust store, including enterprise CAs.
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "platform-verifier"] }
+# Authors can be extracted using capture groups, lookaround and backreferences.
+fancy-regex = "0.20.2"
 
 [profile.release]
 lto = true

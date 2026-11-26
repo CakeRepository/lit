@@ -26,16 +26,13 @@ jobs:
       - name: Rust
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt \
-            --target x86_64-unknown-linux-musl,aarch64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin,x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+            --target x86_64-unknown-linux-musl
           rustup default "$RUST_VERSION"
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
-      - name: Check every release target
-        run: |
-          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
-            cargo clippy --release --locked --target "$target" -- -D warnings
-          done
+      - run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - run: cargo clippy --release --locked --target x86_64-unknown-linux-musl -- -D warnings
       - name: Build
         run: |
           cargo build --release --locked --target x86_64-unknown-linux-musl
@@ -52,16 +49,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-2025]
+        include:
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: macos-15, target: aarch64-apple-darwin }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc }
+          - { os: windows-2025, target: aarch64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
       RUST_VERSION: "1.97.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - run: rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy --target ${{ matrix.target }} && rustup default "$RUST_VERSION"
         shell: bash
-      - run: cargo test --locked
+      - run: cargo clippy --release --locked --target ${{ matrix.target }} -- -D warnings
+        shell: bash
+      - if: matrix.target != 'aarch64-pc-windows-msvc'
+        run: cargo test --locked
         shell: bash
   action-hygiene:
     # Runs lit's actions the way FlowRMM's container jobs do: as root, over folders that belong to the
