@@ -15,6 +15,7 @@ mod json;
 mod land;
 mod parity;
 mod parity_land;
+mod propose;
 mod pyfallback;
 mod sha256;
 mod snapshot;
@@ -34,6 +35,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("agree", agree::command),
     ("collect", collect::command),
     ("land", land::command),
+    ("propose", propose::command),
 ];
 
 fn native(name: &str) -> Option<Native> {

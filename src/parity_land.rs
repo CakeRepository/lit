@@ -7,6 +7,8 @@ pub struct Landing {
     seed: PathBuf,
     receipt: PathBuf,
     repo: PathBuf,
+    command: String,
+    options: Vec<String>,
 }
 
 fn inside(root: &Path, path: &Path) -> Result<PathBuf, String> {
@@ -24,8 +26,27 @@ fn inside(root: &Path, path: &Path) -> Result<PathBuf, String> {
 
 impl Landing {
     pub fn prepare(source: &Path, work: &Path, args: &[String]) -> Result<Self, String> {
-        let (receipt, repo) = land::inputs(args)?;
         let root = source.canonicalize().map_err(|e| e.to_string())?;
+        let mut options = Vec::new();
+        let (receipt, repo) = if args[0] == "propose" {
+            let parsed = crate::propose::parse(&args[1..])?;
+            for flag in ["--head", "--title", "--notes"] {
+                if let Some(v) = parsed.optional(flag) {
+                    let value = if flag == "--notes" {
+                        inside(&root, Path::new(v))?.to_string_lossy().into_owned()
+                    } else {
+                        v.to_owned()
+                    };
+                    options.push(format!("{flag}={value}"));
+                }
+            }
+            (
+                Path::new(parsed.positional[0]),
+                Path::new(parsed.required("--repo")?),
+            )
+        } else {
+            land::inputs(&args[1..])?
+        };
         let receipt = inside(&root, receipt)?;
         let repo = inside(&root, repo)?;
         let raw = files::read(&root.join(&receipt))?;
@@ -36,18 +57,14 @@ impl Landing {
         let branch = snap.field("branch")?.string()?;
         let url = format!("https://github.com/{repository}.git");
         let seed = work.join("landing-base.git");
-        let out = Command::new("git")
-            .args([
-                "clone",
-                "--bare",
-                "--no-local",
-                "--no-tags",
-                "--single-branch",
-                "--branch",
-                branch,
-                "--",
-                &url,
-            ])
+        let mut clone = Command::new("git");
+        clone.args(["clone", "--bare", "--no-local", "--no-tags"]);
+        if args[0] == "land" {
+            clone.args(["--single-branch", "--branch", branch]);
+        }
+        let out = clone
+            .arg("--")
+            .arg(&url)
             .arg(&seed)
             .current_dir(root.join(&repo))
             .output()
@@ -60,6 +77,8 @@ impl Landing {
         }
         Ok(Self {
             seed,
+            command: args[0].clone(),
+            options,
             receipt,
             repo,
         })
@@ -77,10 +96,11 @@ impl Landing {
             .env("LIT_PARITY_LAND_TARGET", target)
             .env("GIT_ALLOW_PROTOCOL", "file");
         child
-            .arg("land")
+            .arg(&self.command)
             .arg(&self.receipt)
             .arg("--repo")
-            .arg(&self.repo);
+            .arg(&self.repo)
+            .args(&self.options);
         Ok(())
     }
 }

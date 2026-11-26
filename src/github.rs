@@ -124,6 +124,9 @@ impl Client {
     pub fn get(&self, path: &str) -> Result<Value, String> {
         self.request(&format!("{}/{}", self.api, path), None)
     }
+    pub fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+        self.request(&format!("{}/{}", self.api, path), Some(json::pretty(&body)))
+    }
 
     pub fn pages(&self, path: &str) -> Result<Vec<Value>, String> {
         let sep = if path.contains('?') { '&' } else { '?' };

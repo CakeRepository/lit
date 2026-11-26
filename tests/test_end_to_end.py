@@ -225,6 +225,52 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("collect and test again", proc.stderr)
         self.assertEqual(s.remote_main(), moved, "the remote keeps the commit that won the race")
 
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "requires the binary parity harness")
+    def test_proposes_only_the_tested_topic_and_recovers_the_draft(self):
+        s = self.s
+        s.collect(1, 2)
+        receipt, result, _ = s.run()
+        head = "lit/batch-example"
+        (s.root / "notes.md").write_text("Reviewed together.\n")
+        args = ["propose", str(receipt), "--repo", "batch.git", "--head", head,
+                "--title", "Two reviewed changes", "--notes", "notes.md"]
+        s.env["LIT_GITHUB_API"] = "auto"
+        comparison = s.lit("parity", *args)
+        self.assertIn("matches between Python and Rust (exit 0)", comparison.stdout)
+        self.assertFalse(s.gh.drafts)
+        self.assertIsNone(s.gh.ref("refs/heads/" + head))
+        s.env["LIT_PYTHON"] = str(s.root / "no-python")
+        first = s.lit(*args)
+        self.assertEqual(first.stdout.strip(), s.gh.drafts[head]["html_url"])
+        self.assertTrue(s.gh.drafts[head]["draft"])
+        self.assertEqual(s.gh.drafts[head]["title"], "Two reviewed changes")
+        self.assertIn(result["final"], s.gh.drafts[head]["body"])
+        self.assertIn("Reviewed together.", s.gh.drafts[head]["body"])
+        self.assertEqual(s.lit(*args).stdout, first.stdout)
+        self.assertEqual(s.gh.calls.count(("POST", f"/repos/{s.gh.repository}/pulls")), 1)
+        self.assertEqual(s.gh.ref("refs/heads/" + head), result["final"])
+        self.assertEqual(s.remote_main(), s.base)
+
+        def graphql(query, variables):
+            if "createPullRequest(" in query:
+                self.assertEqual(variables["base"], "main")
+                self.assertEqual(variables["head"], "lit/another")
+                self.assertIn(result["final"], variables["body"])
+                return dict(data=dict(createPullRequest=dict(pullRequest=dict(url="local-draft-url"))))
+            if "headRefName:$head" in query:
+                return dict(data=dict(repository=dict(pullRequests=dict(nodes=[]))))
+            if "repository(owner:$o,name:$n){id}" in query:
+                return dict(data=dict(repository=dict(id="R1")))
+            prs = [dict(number=n, headRefOid=s.heads[n], author=dict(login="agent"),
+                        isDraft=False, baseRefName="main") for n in (1, 2)]
+            return dict(data=dict(repository=dict(ref=dict(target=dict(oid=s.base)),
+                        pullRequests=dict(nodes=prs, pageInfo=dict(hasNextPage=False)))))
+
+        s.gh.graphql = graphql
+        s.env["LIT_GITHUB_API"] = "graphql"
+        args[args.index(head)] = "lit/another"
+        self.assertEqual(s.lit(*args).stdout.strip(), "local-draft-url")
+
     def test_land_refuses_a_pr_pushed_after_the_run(self):
         s = self.s
         s.collect(1, 2)

@@ -28,6 +28,16 @@ def api_url():
     return os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
 
 
+def git_destination(repository):
+    """Use the harness's local repository when comparing publication commands."""
+    if "LIT_PARITY_LAND_TARGET" in os.environ:
+        target = Path(os.environ["LIT_PARITY_LAND_TARGET"])
+        if os.environ.get("GIT_ALLOW_PROTOCOL") != "file" or not target.is_absolute() or not target.is_dir():
+            raise ValueError("Expected an isolated local landing target")
+        return str(target)
+    return "https://github.com/" + repository + ".git"
+
+
 def graphql_url():
     return os.environ.get("GITHUB_GRAPHQL_URL") or api_url() + "/graphql"
 

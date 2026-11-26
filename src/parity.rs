@@ -81,14 +81,14 @@ fn work_dir() -> io::Result<PathBuf> {
 pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
     let work = work_dir().map_err(|e| (e.to_string(), None))?;
     let fail = |e: String| (e, Some(work.clone()));
-    let landing = if o.args.first().is_some_and(|a| a == "land")
+    let landing = if matches!(o.args.first().map(String::as_str), Some("land" | "propose"))
         && !o
             .args
             .iter()
             .take_while(|a| a.as_str() != "--")
             .any(|a| a == "--help" || a == "-h")
     {
-        Some(crate::parity_land::Landing::prepare(&o.source, &work, &o.args[1..]).map_err(fail)?)
+        Some(crate::parity_land::Landing::prepare(&o.source, &work, &o.args).map_err(fail)?)
     } else {
         None
     };
@@ -120,6 +120,14 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         };
         let mut files = n.tree().map_err(fail)?;
         if landing.is_some() {
+            let draft = target.join("lit-draft.json");
+            if draft.exists() {
+                let raw = fs::read_to_string(draft).map_err(|e| fail(e.to_string()))?;
+                files.insert(
+                    "(draft pull request)".into(),
+                    json::pretty(&json::parse(&raw).map_err(fail)?),
+                );
+            }
             files.insert(
                 "(landing target refs)".into(),
                 git_refs(&target).map_err(fail)?,

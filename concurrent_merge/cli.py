@@ -658,12 +658,7 @@ def land(args):
         raise ValueError("Base or queue eligibility changed; collect and test again")
     ref = "refs/heads/" + snapshot["branch"]
     repo.run("check-ref-format", ref)
-    destination = "https://github.com/" + snapshot["repository"] + ".git"
-    if "LIT_PARITY_LAND_TARGET" in os.environ:
-        target = Path(os.environ["LIT_PARITY_LAND_TARGET"])
-        if os.environ.get("GIT_ALLOW_PROTOCOL") != "file" or not target.is_absolute() or not target.is_dir():
-            raise ValueError("Expected an isolated local landing target")
-        destination = str(target)
+    destination = github.git_destination(snapshot["repository"])
     publish(repo, destination, ref, base, final)
     print(final)
 

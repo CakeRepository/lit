@@ -74,7 +74,7 @@ impl Receipt {
     }
 }
 
-fn heads(snapshot: &Value) -> Result<BTreeMap<u64, String>, String> {
+pub fn heads(snapshot: &Value) -> Result<BTreeMap<u64, String>, String> {
     let mut heads = BTreeMap::new();
     for row in snapshot.field("changes")?.array()? {
         let n = row.field("number")?.number()?;
@@ -134,22 +134,7 @@ fn land(arguments: &[String]) -> Result<String, String> {
     }
     let reference = format!("refs/heads/{branch}");
     repo.text(&["check-ref-format", &reference], None)?;
-    let destination = match std::env::var_os("LIT_PARITY_LAND_TARGET") {
-        Some(value) => {
-            let target = Path::new(&value);
-            if std::env::var("GIT_ALLOW_PROTOCOL").as_deref() != Ok("file")
-                || !target.is_absolute()
-                || !target.is_dir()
-            {
-                return Err("Expected an isolated local landing target".into());
-            }
-            target
-                .to_str()
-                .ok_or("Expected a UTF-8 landing target")?
-                .to_owned()
-        }
-        None => format!("https://github.com/{repository}.git"),
-    };
+    let destination = destination(repository)?;
     let output = repo.output(
         &[
             "push",
@@ -172,4 +157,23 @@ fn land(arguments: &[String]) -> Result<String, String> {
         return Err(format!("git push: {}", stderr.trim()));
     }
     Ok(receipt.final_oid)
+}
+
+pub fn destination(repository: &str) -> Result<String, String> {
+    Ok(match std::env::var_os("LIT_PARITY_LAND_TARGET") {
+        Some(value) => {
+            let target = Path::new(&value);
+            if std::env::var("GIT_ALLOW_PROTOCOL").as_deref() != Ok("file")
+                || !target.is_absolute()
+                || !target.is_dir()
+            {
+                return Err("Expected an isolated local landing target".into());
+            }
+            target
+                .to_str()
+                .ok_or("Expected a UTF-8 landing target")?
+                .to_owned()
+        }
+        None => format!("https://github.com/{repository}.git"),
+    })
 }
