@@ -644,12 +644,10 @@ mod tests {
     fn run_sh(script: &str, setup: impl FnOnce(&Path)) -> Report {
         let src = work_dir().unwrap();
         setup(&src);
-        use std::os::unix::fs::PermissionsExt;
-        let driver = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-        fs::write(&driver, "#!/bin/sh\nshift\nexec sh \"$@\"\n").unwrap();
-        fs::set_permissions(&driver, fs::Permissions::from_mode(0o700)).unwrap();
+        // A freshly written driver can still have a writer in a concurrent fork (ETXTBSY).
+        let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parity-driver.sh");
         let r = run(&Options {
-            program: driver.to_path_buf(),
+            program: driver,
             source: src.clone(),
             args: vec!["-c".into(), script.into()],
             epoch: "1700000000".into(),
