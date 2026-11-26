@@ -1,0 +1,23 @@
+usage: concurrent-merge proof verify [-h] --repository REPOSITORY --commit
+                                     COMMIT
+                                     (--allowed-signers ALLOWED_SIGNERS | --signers-at REV)
+                                     [--repo REPO] [--image IMAGE]
+                                     [--max-age-hours MAX_AGE_HOURS]
+                                     [--revoked REVOKED] --into INTO
+                                     proof
+
+positional arguments:
+  proof
+
+options:
+  -h, --help            show this help message and exit
+  --repository REPOSITORY
+  --commit COMMIT       Commit a proof may be for (repeat)
+  --allowed-signers ALLOWED_SIGNERS
+  --signers-at REV      Read .lit/allowed_signers at REV (the target branch)
+                        from --repo
+  --repo REPO
+  --image IMAGE         Require proofs made in this container image
+  --max-age-hours MAX_AGE_HOURS
+  --revoked REVOKED     File of revoked key fingerprints, one per line
+  --into INTO           Store for cached-units --proof-store

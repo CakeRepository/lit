@@ -1,0 +1,21 @@
+usage: concurrent-merge proof [-h]
+                              {pack,sign,push,verify,take,book-pull,book-push}
+                              ...
+
+Signed test results that other machines can check and reuse.
+
+positional arguments:
+  {pack,sign,push,verify,take,book-pull,book-push}
+    pack                Pack the passing records a run wrote for HEAD
+    sign                Sign a proof with ssh-keygen (the key may live in ssh-
+                        agent)
+    push                Push a signed proof next to its commit
+    verify              Check one signed proof and unpack it into a store
+    take                Fetch, check and unpack every proof pushed for the
+                        commits
+    book-pull           Fetch the signers' audit book
+    book-push           Push the audit book back if nobody changed it
+                        meanwhile
+
+options:
+  -h, --help            show this help message and exit

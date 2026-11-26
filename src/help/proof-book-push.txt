@@ -1,0 +1,12 @@
+usage: concurrent-merge proof book-push [-h] --remote REMOTE [--repo REPO]
+                                        [--ref REF]
+                                        book
+
+positional arguments:
+  book
+
+options:
+  -h, --help       show this help message and exit
+  --remote REMOTE
+  --repo REPO
+  --ref REF

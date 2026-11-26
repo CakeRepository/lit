@@ -86,13 +86,16 @@ def pack(store, jobs, *, repository, commit, tree, image, out, now=None):
         commit=commit,
         tree=tree,
         image=image,
-        created=(now or datetime.now(timezone.utc)).isoformat(),
+        created=(now or (_utc(os.environ["LIT_PARITY_PROOF_TIME"]) if os.environ.get("LIT_PARITY_PROOF_TIME")
+                         else datetime.now(timezone.utc))).isoformat(),
         jobs=packed,
     )
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # mtime=0 so the same records always make the same bytes.
-    out.write_bytes(gzip.compress(json.dumps(payload, sort_keys=True).encode("utf8"), mtime=0))
+    data = bytearray(gzip.compress(json.dumps(payload, sort_keys=True).encode("utf8"), compresslevel=9, mtime=0))
+    data[9] = 255  # OS-independent gzip header, including on Python 3.12
+    out.write_bytes(data)
     return out
 
 
