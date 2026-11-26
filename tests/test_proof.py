@@ -182,7 +182,15 @@ sys.exit(0 if all("ok" in open(f"src/{n}.py").read() for n in "ab") else 1)
         subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
         ref = proof.push(packed, sig, str(remote), self.work)
         self.assertTrue(ref.startswith(proof.REF_PREFIX + pr_head + "/"))
-        self.assertEqual(proof.push(packed, sig, str(remote), self.work), ref)  # pushing again is a no-op
+        # A different process retries after the clock advances.
+        with patch.dict(os.environ, GIT_AUTHOR_DATE="@1800000000 +0000", GIT_COMMITTER_DATE="@1800000000 +0000"):
+            self.assertEqual(proof.push(packed, sig, str(remote), self.work), ref)
+        oid = proof.git(remote, "rev-parse", ref)
+        tree = proof.git(remote, "rev-parse", oid + "^{tree}")
+        legacy = proof._commit_tree(remote, tree, "earlier push", date="@1700000000 +0000")
+        proof.git(remote, "update-ref", ref, legacy, oid)
+        self.assertEqual(proof.push(packed, sig, str(remote), self.work), ref)
+        self.assertEqual(proof.git(remote, "rev-parse", ref), legacy)
 
         self.git("checkout", "-q", "main")
         self.commit({"src/b.py": "ok from main\n"})
