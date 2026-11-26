@@ -196,6 +196,19 @@ if __name__ == "__main__":
 
 
 class HostTests(unittest.TestCase):
+    def test_same_tick_tool_rewrite_changes_the_digest(self):
+        from concurrent_merge.footprint import file_digest
+        with tempfile.TemporaryDirectory() as root:
+            tool = Path(root, "tool")
+            tool.write_bytes(b"v1")
+            same_tick = tool.stat()
+            with patch("os.fstat", return_value=same_tick), patch(
+                "time.time_ns", return_value=same_tick.st_ctime_ns
+            ):
+                first = file_digest(tool)
+                tool.write_bytes(b"v2")
+                self.assertNotEqual(file_digest(tool), first)
+
     def manifest(self, external):
         return dict(incomplete=[], network=False, reads_git_metadata=False, commit="c",
                     tracked={}, directories=[], listings={}, absent=[], untracked={},

@@ -430,8 +430,8 @@ def under(path, root):
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-# (path, size, mtime, inode, ctime) -> digest. A caller may load and save it
-# between runs; any change to a file's metadata makes its entry miss.
+# Persist digests only after the filesystem clock has advanced beyond a file's
+# last change. A same-size rewrite within one timestamp tick can share every stat field.
 DIGESTS = {}
 
 
@@ -443,16 +443,24 @@ def file_digest(path):
             return "absent"
         if not os.path.isfile(path):
             return "other"
-        st = os.stat(path)
-        key = f"{path}\0{st.st_size}\0{st.st_mtime_ns}\0{st.st_ino}\0{st.st_ctime_ns}"
-        if key in DIGESTS:
-            return DIGESTS[key]
-        h = sha256()
         with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            # Include the device to distinguish mount points and retire entries
+            # written by older versions that cached freshly changed files.
+            key = f"{path}\0{st.st_dev}\0{st.st_ino}\0{st.st_size}\0{st.st_mtime_ns}\0{st.st_ctime_ns}"
+            stable = time.time_ns() - max(st.st_mtime_ns, st.st_ctime_ns) > 2_000_000_000
+            if stable and key in DIGESTS:
+                return DIGESTS[key]
+            h = sha256()
             for block in iter(lambda: f.read(1 << 20), b""):
                 h.update(block)
-        DIGESTS[key] = h.hexdigest()
-        return DIGESTS[key]
+            digest = h.hexdigest()
+            end = os.fstat(f.fileno())
+            if stable and (end.st_size, end.st_ctime_ns, end.st_mtime_ns) == (
+                st.st_size, st.st_ctime_ns, st.st_mtime_ns
+            ):
+                DIGESTS[key] = digest
+            return digest
     except OSError:
         return "unreadable"
 
