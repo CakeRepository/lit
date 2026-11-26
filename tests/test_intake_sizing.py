@@ -62,6 +62,72 @@ class SizedIntakeTests(unittest.TestCase):
         self.assertEqual(assemble.call_args_list[0].args, ({api.active: "lock"}, [[4, "d"]]))
         finish.assert_called_once()
 
+    def test_a_never_failed_pr_goes_between_suspect_halves(self):
+        api = Intake("owner/repo", "main", "trusted", Mock())
+        ready = {f"refs/heads/lit/ready/{i}": f"{i:040x}" for i in (1, 2, 3, 4)}
+        suspects = [[[1, f"{1:040x}"]], [[2, f"{2:040x}"]]]
+
+        def drain(record, refs):
+            """One pass over `record`, then stop at the batch it claims."""
+            with (
+                patch.object(api, "refs", return_value={api.active: "lock", **refs}),
+                patch.object(api, "state", return_value=record),
+                patch.object(api, "assemble", return_value=("b", "t")) as assemble,
+                patch.object(api, "claim", side_effect=StopIteration) as claim,
+            ):
+                with self.assertRaises(StopIteration):
+                    api._drain(wait=False)
+            return assemble.call_args, claim.call_args
+
+        # Fresh PRs #3 and #4 go first, alone, and every suspect group stays queued.
+        assembled, claimed = drain(dict(remaining=suspects), ready)
+        self.assertEqual(assembled.args[1], [(3, f"{3:040x}"), (4, f"{4:040x}")])
+        self.assertEqual(claimed.kwargs["remaining"], suspects)
+        self.assertTrue(claimed.kwargs["fresh"])
+        # After a fresh round the next one takes the first suspect group, without a marker.
+        assembled, claimed = drain(dict(remaining=suspects, after_fresh=True), ready)
+        self.assertEqual(assembled.args[1], suspects[0])
+        self.assertEqual(claimed.kwargs["remaining"], suspects[1:])
+        self.assertFalse(claimed.kwargs.get("fresh"))
+        # Without fresh PRs the suspect group is taken at once.
+        only = {r: h for r, h in ready.items() if r[-1] in "12"}
+        assembled, claimed = drain(dict(remaining=suspects), only)
+        self.assertEqual(assembled.args[1], suspects[0])
+        self.assertFalse(claimed.kwargs.get("fresh"))
+
+    def test_a_fresh_round_that_assembles_nothing_falls_back_to_the_suspect_group(self):
+        api = Intake("owner/repo", "main", "trusted", Mock())
+        suspects = [[[1, f"{1:040x}"]]]
+        refs = {api.active: "lock", "refs/heads/lit/ready/1": f"{1:040x}", "refs/heads/lit/ready/3": f"{3:040x}"}
+        with (
+            patch.object(api, "refs", return_value=refs),
+            patch.object(api, "state", return_value=dict(remaining=suspects)),
+            patch.object(api, "assemble", side_effect=[None, ("b", "t")]) as assemble,
+            patch.object(api, "claim", side_effect=StopIteration) as claim,
+        ):
+            with self.assertRaises(StopIteration):
+                api._drain(wait=False)
+        self.assertEqual([c.args[1] for c in assemble.call_args_list], [[(3, f"{3:040x}")], suspects[0]])
+        self.assertFalse(claim.call_args.kwargs.get("fresh"))
+
+    def test_claim_marks_a_fresh_batch_and_its_close_marks_the_next_record(self):
+        api = Intake("owner/repo", "main", "trusted", Mock())
+        with (
+            patch.object(api, "fetch_commits"),
+            patch.object(intake, "manifest", return_value=[[3, "c"]]),
+            patch.object(intake, "verify_sources", return_value={}),
+            patch.object(api, "record", return_value="lock") as write,
+            patch.object(api, "push"),
+        ):
+            api.claim({api.target: "m"}, "b", "t", remaining=[[[1, "a"]]], fresh=True)
+            self.assertIs(write.call_args.args[0]["fresh"], True)
+            api.claim({api.target: "m"}, "b", "t", remaining=[[[1, "a"]]])
+            self.assertNotIn("fresh", write.call_args.args[0])
+        for record, marked in ((dict(fresh=True), True), (dict(), False)):
+            with patch.object(api, "record", return_value="next") as write, patch.object(api, "push"):
+                api.finish({}, "lock", record, pending=[[[1, "a"]]])
+            self.assertEqual(write.call_args.args[0].get("after_fresh", False), marked)
+
     def test_claim_carries_the_red_counts_into_the_batch_record(self):
         api = Intake("owner/repo", "main", "trusted", Mock())
         with (

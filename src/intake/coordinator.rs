@@ -589,17 +589,36 @@ impl Intake<'_> {
                     pause(30);
                 }
             } else {
-                let mut groups = span(&row, "remaining")?.into_iter();
-                let first = groups.next().map(|g| members(&g)).transpose()?;
+                let all = span(&row, "remaining")?;
+                let first = all.first().map(members).transpose()?;
+                let rest: Vec<Value> = all.iter().skip(1).cloned().collect();
+                if first.is_some() && !row.get("after_fresh").is_some_and(Value::truthy) {
+                    // Alternate: a ready PR that never failed goes before the next suspect group.
+                    let mut suspects = BTreeSet::new();
+                    for g in &all {
+                        suspects.extend(members(g)?.into_iter().map(|(n, _)| n));
+                    }
+                    let fresh = Self::pins(&refs)
+                        .into_iter()
+                        .filter(|(n, _)| !suspects.contains(n))
+                        .collect::<Vec<_>>();
+                    if !fresh.is_empty() {
+                        let limit = split::limit(self.limit, row.get("red"))?;
+                        if let Some((base, tip)) = self.assemble(&refs, Some(&fresh), limit)? {
+                            self.claim(&refs, &base, &tip, all, row.get("red"), true)?;
+                            continue;
+                        }
+                    }
+                }
                 let limit = if first.is_some() {
                     None
                 } else {
                     split::limit(self.limit, row.get("red"))?
                 };
                 if let Some((base, tip)) = self.assemble(&refs, first.as_deref(), limit)? {
-                    self.claim(&refs, &base, &tip, groups.collect(), row.get("red"))?;
+                    self.claim(&refs, &base, &tip, rest, row.get("red"), false)?;
                 } else if first.is_some() {
-                    self.finish(&refs, lock, &row, &[], groups.collect())?;
+                    self.finish(&refs, lock, &row, &[], rest)?;
                 } else {
                     println!("No eligible source requests remain.");
                     return Ok(());
