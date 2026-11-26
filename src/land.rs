@@ -134,12 +134,28 @@ fn land(arguments: &[String]) -> Result<String, String> {
     }
     let reference = format!("refs/heads/{branch}");
     repo.text(&["check-ref-format", &reference], None)?;
+    let destination = match std::env::var_os("LIT_PARITY_LAND_TARGET") {
+        Some(value) => {
+            let target = Path::new(&value);
+            if std::env::var("GIT_ALLOW_PROTOCOL").as_deref() != Ok("file")
+                || !target.is_absolute()
+                || !target.is_dir()
+            {
+                return Err("Expected an isolated local landing target".into());
+            }
+            target
+                .to_str()
+                .ok_or("Expected a UTF-8 landing target")?
+                .to_owned()
+        }
+        None => format!("https://github.com/{repository}.git"),
+    };
     let output = repo.output(
         &[
             "push",
             "--porcelain",
             &format!("--force-with-lease={reference}:{base}"),
-            &format!("https://github.com/{repository}.git"),
+            &destination,
             &format!("{}:{reference}", receipt.final_oid),
         ],
         None,

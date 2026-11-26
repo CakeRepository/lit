@@ -5,7 +5,6 @@ use std::process::Command;
 
 pub struct Landing {
     seed: PathBuf,
-    url: String,
     receipt: PathBuf,
     repo: PathBuf,
 }
@@ -61,7 +60,6 @@ impl Landing {
         }
         Ok(Self {
             seed,
-            url,
             receipt,
             repo,
         })
@@ -73,37 +71,11 @@ impl Landing {
         let root = dir.canonicalize().map_err(|e| e.to_string())?;
         inside(&root, &repo_dir)?;
         inside(&root, &dir.join(&self.receipt))?;
-        let dest = target
-            .to_str()
-            .ok_or("landing parity needs a UTF-8 temp path")?;
-        // Configure a named remote in the command's environment. Probe the same URL Git
-        // will receive and decline to run either land if a more specific rewrite won.
-        let count: usize = std::env::var("GIT_CONFIG_COUNT")
-            .unwrap_or_else(|_| "0".into())
-            .parse()
-            .map_err(|_| "invalid GIT_CONFIG_COUNT")?;
-        let mut probe = Command::new("git");
-        for cmd in [&mut probe, &mut *child] {
-            cmd.env("GIT_CONFIG_COUNT", (count + 1).to_string())
-                .env(
-                    format!("GIT_CONFIG_KEY_{count}"),
-                    format!("url.{dest}.pushInsteadOf"),
-                )
-                .env(format!("GIT_CONFIG_VALUE_{count}"), &self.url)
-                .env("GIT_ALLOW_PROTOCOL", "file");
-        }
-        let out = probe
-            .arg("-C")
-            .arg(&repo_dir)
-            .arg("-c")
-            .arg(format!("remote.lit-parity-probe.url={}", self.url))
-            .args(["remote", "get-url", "--push", "lit-parity-probe"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() || Path::new(String::from_utf8_lossy(&out.stdout).trim()) != target
-        {
-            return Err("could not isolate the landing push from the original remote".into());
-        }
+        // Only the publication destination changes. Both implementations still read live
+        // eligibility and run their normal compare-and-swap push against a real Git repo.
+        child
+            .env("LIT_PARITY_LAND_TARGET", target)
+            .env("GIT_ALLOW_PROTOCOL", "file");
         child
             .arg("land")
             .arg(&self.receipt)
