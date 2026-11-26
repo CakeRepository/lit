@@ -9,8 +9,18 @@ fn lit() -> Command {
     Command::new(env!("CARGO_BIN_EXE_lit"))
 }
 
-fn have(program: &str) -> bool {
-    Command::new(program).arg("--version").output().is_ok()
+fn python() -> String {
+    std::env::var("LIT_PYTHON")
+        .ok()
+        .into_iter()
+        .chain(["python3".into(), "python".into()])
+        .find(|bin| {
+            Command::new(bin)
+                .args(["-c", "import sys; sys.exit(sys.version_info < (3, 12))"])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
+        .expect("CLI parity tests require Python 3.12 or later")
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -106,10 +116,7 @@ fn version() {
 /// written next to the binary's source or into the checkout.
 #[test]
 fn runs_todays_lit() {
-    if !have("python3") {
-        eprintln!("skipped: python3 not installed");
-        return;
-    }
+    let python = python();
     let work = scratch_batch("run");
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"));
     let before = tree(checkout);
@@ -122,9 +129,9 @@ fn runs_todays_lit() {
             "--state",
             "state",
             "--test",
-            "test",
-            "-f",
-            "b.txt",
+            &python,
+            "-c",
+            "from pathlib import Path; assert Path('b.txt').is_file()",
         ])
         .current_dir(&work)
         .output()
@@ -153,10 +160,7 @@ fn runs_todays_lit() {
 /// are made at SOURCE_DATE_EPOCH.
 #[test]
 fn parity_on_a_batch() {
-    if !have("python3") {
-        eprintln!("skipped: python3 not installed");
-        return;
-    }
+    let python = python();
     let work = scratch_batch("parity");
     let out = lit()
         .args([
@@ -169,7 +173,12 @@ fn parity_on_a_batch() {
             "--state",
             "state",
         ])
-        .args(["--test", "sh", "-c", "sleep 1 && test -f b.txt"])
+        .args([
+            "--test",
+            &python,
+            "-c",
+            "from pathlib import Path; import time; time.sleep(1); assert Path('b.txt').is_file()",
+        ])
         .current_dir(&work)
         .output()
         .unwrap();

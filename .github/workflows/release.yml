@@ -18,8 +18,8 @@ jobs:
         include:
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, name: lit-linux-amd64 }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, name: lit-linux-arm64 }
-          - { os: macos-14, target: x86_64-apple-darwin, name: lit-darwin-amd64 }
-          - { os: macos-14, target: aarch64-apple-darwin, name: lit-darwin-arm64 }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, name: lit-darwin-amd64 }
+          - { os: macos-15, target: aarch64-apple-darwin, name: lit-darwin-arm64 }
           - { os: windows-2025, target: x86_64-pc-windows-msvc, name: lit-windows-amd64.exe }
           - { os: windows-2025, target: aarch64-pc-windows-msvc, name: lit-windows-arm64.exe }
     runs-on: ${{ matrix.os }}
@@ -50,8 +50,8 @@ jobs:
           mkdir dist
           ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
           cp "target/${{ matrix.target }}/release/lit$ext" "dist/${{ matrix.name }}"
-      # Run what runs natively here: not arm64 Windows on the x64 runner, nor x64 macOS on the arm64 one.
-      - if: matrix.target != 'aarch64-pc-windows-msvc' && matrix.target != 'x86_64-apple-darwin'
+      # The arm64 Windows binary is cross-compiled on the x64 runner.
+      - if: matrix.target != 'aarch64-pc-windows-msvc'
         run: ./dist/${{ matrix.name }} version
       - if: startsWith(matrix.target, 'x86_64-unknown-linux')
         name: Root hygiene
