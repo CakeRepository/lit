@@ -121,9 +121,10 @@ class IntakeCLI(unittest.TestCase):
         self.assertEqual(git(remote, "rev-parse", "refs/heads/" + self.branch), self.tip)
         self.assertEqual(git(self.remote, "for-each-ref", "--format=%(refname)", "refs/heads/lit"), "")
 
-    def lock(self, record):
-        tree = git(self.remote, "rev-parse", self.tip + "^{tree}")
-        lock = git(self.remote, "commit-tree", tree, "-p", self.tip, "-m", json.dumps(record))
+    def lock(self, record, parent=None):
+        parent = parent or self.tip
+        tree = git(self.remote, "rev-parse", parent + "^{tree}")
+        lock = git(self.remote, "commit-tree", tree, "-p", parent, "-m", json.dumps(record))
         git(self.remote, "update-ref", "refs/heads/lit/active/main", lock)
 
     def refs(self, side, prefix):
@@ -281,6 +282,47 @@ class IntakeCLI(unittest.TestCase):
         side = self.parity("--direct-context", "full", "drain", "--no-wait")
         remote = side / "intake-remote.git"
         self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.tip)
+        self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+
+    def extra_pr(self, n):
+        work = self.root / f"work{n}"
+        git(self.root, "clone", "-q", str(self.remote), str(work))
+        git(work, "checkout", "-q", "-B", f"pr-{n}", self.base)
+        (work / f"feature-{n}").write_text(str(n))
+        git(work, "add", ".")
+        git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", f"topic {n}")
+        head = git(work, "rev-parse", "HEAD")
+        git(work, "push", "-q", str(self.remote), f"HEAD:refs/pull/{n}/head")
+        self.prs[n] = self.pr(n, head)
+        return [n, head]
+
+    def landed_order(self, side):
+        log = git(side / "intake-remote.git", "log", "--reverse", "--format=%s", "refs/heads/main")
+        return [line.split()[-1] for line in log.splitlines() if line.startswith("topic")]
+
+    def failed_pair(self, fresh):
+        """The state after the batch of #1 and #2 failed and was halved, with `fresh` PRs also ready."""
+        ready = [*self.members, *(self.extra_pr(n) for n in fresh)]
+        for n, head in ready:
+            git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
+        for n, _ in ready:
+            self.full_suite(n)
+        if fresh:
+            self.pulls(fresh)  # the fresh round asks about all of them before sizing the batch
+        for n, _ in ready:
+            self.pulls([n])
+        self.lock(dict(remaining=[[self.members[0]], [self.members[1]]]), parent=self.base)
+
+    def test_a_ready_pr_that_never_failed_goes_between_suspect_halves(self):
+        self.failed_pair([3, 4])
+        side = self.parity("--max-batch", "1", "--direct-context", "full", "drain", "--no-wait")
+        self.assertEqual(self.landed_order(side), ["3", "1", "4", "2"])
+        self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+
+    def test_the_suspect_half_goes_first_when_no_other_pr_is_ready(self):
+        self.failed_pair([])
+        side = self.parity("--max-batch", "1", "--direct-context", "full", "drain", "--no-wait")
+        self.assertEqual(self.landed_order(side), ["1", "2"])
         self.assertEqual(self.refs(side, "refs/heads/lit"), "")
 
     def test_a_pr_without_the_full_suite_sends_the_batch_through_the_queue(self):

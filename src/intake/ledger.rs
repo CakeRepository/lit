@@ -333,6 +333,7 @@ impl Intake<'_> {
         tip: &str,
         remaining: Vec<Value>,
         red: Option<&Value>,
+        fresh: bool,
     ) -> Result<()> {
         let target = refs.get(&self.target).ok_or("Missing target branch")?;
         self.fetch([target.as_str()])?;
@@ -349,6 +350,10 @@ impl Intake<'_> {
         ]);
         if let Some(red) = red.filter(|r| r.truthy()) {
             row = with(&row, "red", red.clone())?;
+        }
+        if fresh {
+            // Never-failed PRs went first; the next round takes the first suspect group.
+            row = with(&row, "fresh", Value::Bool(true))?;
         }
         let next = self.record(&row, tip)?;
         self.push(vec![
@@ -448,6 +453,9 @@ impl Intake<'_> {
             let mut row = object([("remaining", Value::Array(pending))]);
             if let Some(red) = red {
                 row = with(&row, "red", red.clone())?;
+            }
+            if record.get("fresh").is_some_and(Value::truthy) {
+                row = with(&row, "after_fresh", Value::Bool(true))?;
             }
             self.record(&row, lock)?
         } else {

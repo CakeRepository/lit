@@ -347,7 +347,7 @@ class Intake:
                 )
         return record
 
-    def claim(self, refs, base, tip, remaining=(), red=None):
+    def claim(self, refs, base, tip, remaining=(), red=None, fresh=False):
         self.fetch_commits([refs[self.target]])
         members = manifest(self.repo, batch_name(base, tip), tip, refs[self.target])
         green = verify_sources(self.repository, self.branch, members, self.context)
@@ -361,6 +361,9 @@ class Intake:
         )
         if red:
             record["red"] = red
+        if fresh:
+            # Never-failed PRs went first; the next round takes the first suspect group.
+            record["fresh"] = True
         # A single source is a one-member batch too: its batch PR runs the full suites on the exact
         # tree the queue will build, and the queue group reuses that run while main has not moved.
         # (A record marked "individual" by an older coordinator still advances on the original PR.)
@@ -462,7 +465,10 @@ class Intake:
         pending = record.get("remaining", []) if pending is None else pending
         red = record.get("red")
         if pending:
-            next_lock = self.record(dict(remaining=pending, **({"red": red} if red else {})), lock)
+            next = dict(remaining=pending, **({"red": red} if red else {}))
+            if record.get("fresh"):
+                next["after_fresh"] = True
+            next_lock = self.record(next, lock)
         elif red and self.max_batch == "auto" and not self.original_prs_only:
             # Keep the red counts between batches; an idle record has nothing left to do.
             next_lock = self.record(dict(remaining=[], red=red), lock)
@@ -1006,6 +1012,22 @@ class Intake:
                     time.sleep(30)
                 continue
             groups = record.get("remaining", [])
+            if groups and not record.get("after_fresh"):
+                # Alternate: a ready PR that never failed goes before the next suspect group.
+                suspects = {n for group in groups for n, _ in group}
+                fresh = [
+                    (n, head)
+                    for n, head in sorted(
+                        (int(ref.rsplit("/", 1)[1]), head)
+                        for ref, head in refs.items()
+                        if re.fullmatch(r"refs/heads/lit/ready/[1-9]\d*", ref)
+                    )
+                    if n not in suspects
+                ]
+                prepared = self.assemble(refs, fresh, batch_limit(self.max_batch, record)) if fresh else None
+                if prepared:
+                    self.claim(refs, *prepared, remaining=groups, red=record.get("red"), fresh=True)
+                    continue
             if groups:
                 prepared = self.assemble(refs, groups[0])
             else:
