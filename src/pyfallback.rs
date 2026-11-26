@@ -293,11 +293,23 @@ pub fn python() -> Result<PathBuf, String> {
     ))
 }
 
-const LAUNCHER: &str = "import sys; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = 'lit'; \
-from concurrent_merge import readers; readers.native_program = sys.argv.pop(1); \
-readers.native_suffixes = sys.argv.pop(1).split(','); \
-from concurrent_merge import engine; engine.native_program = readers.native_program; \
-from concurrent_merge.cli import main; sys.exit(main())";
+const LAUNCHER: &str = r#"import sys
+sys.path.insert(0, sys.argv.pop(1))
+sys.argv[0] = "lit"
+from concurrent_merge import engine, readers
+readers.native_program = sys.argv.pop(1)
+readers.native_suffixes = sys.argv.pop(1).split(",")
+engine.native_program = readers.native_program
+epoch = sys.argv.pop(1)
+if epoch and sys.argv[1:2] == ["cached-run"]:
+    from datetime import datetime, timezone
+    from functools import partial
+    from concurrent_merge import cache
+    cache.cached_run = partial(cache.cached_run, clock=lambda: datetime.fromtimestamp(int(epoch), timezone.utc),
+                               rng=lambda: 0.5)
+from concurrent_merge.cli import main
+sys.exit(main())
+"#;
 
 /// Builds the Python process for args. dir is the folder extract made.
 pub fn command(python: &Path, dir: &Path, args: &[String], python_only: bool) -> Command {
@@ -311,6 +323,11 @@ pub fn command(python: &Path, dir: &Path, args: &[String], python_only: bool) ->
         .arg(dir)
         .arg(binary.unwrap_or_default())
         .arg(crate::readers::suffixes().join(","))
+        .arg(
+            crate::parity::epoch()
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+        )
         .args(args);
     // -B already stops bytecode; the variable also covers any Python the command starts.
     cmd.env("PYTHONDONTWRITEBYTECODE", "1");

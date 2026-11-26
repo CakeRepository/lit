@@ -1,0 +1,24 @@
+usage: concurrent-merge cached-run [-h] --store STORE --job JOB
+                                   [--workdir WORKDIR]
+                                   [--mode {shadow,enforce}]
+                                   [--audit-rate AUDIT_RATE]
+                                   [--ignore-env PATTERN] [--strict-env]
+                                   [--allow-network] [--log LOG]
+                                   [--receipt RECEIPT] --test ...
+
+options:
+  -h, --help            show this help message and exit
+  --store STORE
+  --job JOB
+  --workdir WORKDIR
+  --mode {shadow,enforce}
+  --audit-rate AUDIT_RATE
+                        In enforce mode, the fraction of predicted reuses that
+                        still run
+  --ignore-env PATTERN
+  --strict-env          Also record per-run CI variables such as GITHUB_SHA
+                        and GITHUB_RUN_ID
+  --allow-network
+  --log LOG
+  --receipt RECEIPT
+  --test ...

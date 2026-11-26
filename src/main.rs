@@ -21,6 +21,7 @@ mod land;
 mod merge;
 mod merge_tree;
 mod parity;
+mod parity_footprint;
 mod parity_land;
 mod preview;
 mod proof;
@@ -50,6 +51,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("blame", reports::blame_command),
     ("score-bun", reports::score_command),
     ("cache-report", cache_report::command),
+    ("cached-run", footprint::cache::command),
     ("reuse", footprint::reuse),
     ("select", footprint::select),
     ("trace", footprint::trace_cli::trace),
@@ -72,8 +74,15 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> i32 {
     let (args, python) = match args.split_first() {
-        Some((s, rest)) if s == "--internal-parity-python" => (rest, true),
-        Some((s, rest)) if s == "--internal-parity-rust" => (rest, false),
+        Some((s, rest))
+            if matches!(
+                s.as_str(),
+                "--internal-parity-python" | "--internal-parity-rust"
+            ) =>
+        {
+            parity::set_epoch();
+            (rest, s == "--internal-parity-python")
+        }
         _ => (args, std::env::var("LIT_IMPL").as_deref() == Ok("python")),
     };
     match args.first().map(String::as_str) {
