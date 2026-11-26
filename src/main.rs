@@ -4,6 +4,10 @@
 //! command that has not moved yet runs the Python lit embedded in this binary,
 //! so the binary already does everything concurrent-merge does.
 
+mod agree;
+mod args;
+mod files;
+mod git;
 mod handback;
 mod json;
 mod parity;
@@ -21,7 +25,7 @@ type Native = fn(&[String]) -> i32;
 
 /// The commands written in Rust. Every other command runs on the embedded
 /// Python. A command joins this table once its parity cases match.
-const NATIVE: &[(&str, Native)] = &[];
+const NATIVE: &[(&str, Native)] = &[("agree", agree::command)];
 
 fn native(name: &str) -> Option<Native> {
     NATIVE.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)
@@ -39,12 +43,20 @@ fn run(args: &[String]) -> i32 {
             0
         }
         Some("parity") => parity_command(&args[1..]),
-        Some(name) => match native(name) {
-            // LIT_IMPL=python forces the Python lit; lit parity sets it on one side.
-            Some(cmd) if std::env::var("LIT_IMPL").as_deref() != Ok("python") => cmd(&args[1..]),
-            _ => fallback(args),
-        },
-        None => fallback(args),
+        _ => {
+            let session = handback::begin();
+            let command = args.first().and_then(|name| native(name));
+            let code = match command {
+                Some(cmd) if std::env::var("LIT_IMPL").as_deref() != Ok("python") => {
+                    cmd(&args[1..])
+                }
+                _ => fallback(args),
+            };
+            if let Err(e) = session.finish(&handback::paths(args)) {
+                eprintln!("lit: could not give some files back to their folder's owner: {e}");
+            }
+            code
+        }
     }
 }
 
@@ -61,15 +73,6 @@ fn version_line() -> String {
 
 /// Runs args with the embedded Python lit.
 fn fallback(args: &[String]) -> i32 {
-    let session = handback::begin();
-    let code = fallback_inner(args);
-    if let Err(e) = session.finish(&handback::paths(args)) {
-        eprintln!("lit: could not give some files back to their folder's owner: {e}");
-    }
-    code
-}
-
-fn fallback_inner(args: &[String]) -> i32 {
     let python = match pyfallback::python() {
         Ok(p) => p,
         Err(e) => {

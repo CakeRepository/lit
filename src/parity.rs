@@ -104,8 +104,8 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         sides.push(Side {
             name,
             code: exit_code(&out.status),
-            stdout: n.text(&String::from_utf8_lossy(&out.stdout)),
-            stderr: n.text(&String::from_utf8_lossy(&out.stderr)),
+            stdout: n.stream(&out.stdout),
+            stderr: n.stream(&out.stderr),
             files: n.tree().map_err(fail)?,
         });
     }
@@ -313,6 +313,14 @@ fn mask_times(s: &str) -> String {
 }
 
 impl Normalizer<'_> {
+    fn stream(&self, bytes: &[u8]) -> String {
+        let text = String::from_utf8_lossy(bytes);
+        // Python's Windows text streams use CRLF. Rust's println uses LF.
+        #[cfg(windows)]
+        let text = text.replace("\r\n", "\n");
+        self.text(&text)
+    }
+
     fn text(&self, s: &str) -> String {
         let mut s = s.to_string();
         let mut dirs = vec![self.dir.to_string_lossy().into_owned()];

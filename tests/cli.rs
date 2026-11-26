@@ -198,3 +198,87 @@ fn parity_on_a_batch() {
     );
     fs::remove_dir_all(work).unwrap();
 }
+
+#[test]
+fn agree_records_exact_bytes_without_python_and_matches_the_reference() {
+    let work = temp("agree");
+    git(&work, &["init", "--bare", "batch.git"]);
+    let key = "a".repeat(64);
+    let who = "pr:3:Zoë";
+    let dir = work.join("state/conflicts");
+    fs::create_dir_all(&dir).unwrap();
+    let record = dir.join(format!("{key}.json"));
+    fs::write(
+        &record,
+        format!(r#"{{"mode":"100644","authors":["{who}"]}}"#),
+    )
+    .unwrap();
+    let contents = b"a\0b\r\n\xff";
+    fs::write(work.join("replacement"), contents).unwrap();
+    let args = |id, participant| {
+        vec![
+            "agree",
+            id,
+            participant,
+            "replacement",
+            "--repo=batch.git",
+            "--state",
+            "state",
+        ]
+    };
+    let parity = |args: &[&str], code| {
+        let out = lit()
+            .arg("parity")
+            .arg("--")
+            .args(args)
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .contains(&format!("matches between Python and Rust (exit {code})")),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    parity(&args(&key, who), 0);
+    parity(&args("invalid-id", who), 2);
+    parity(&args(&key, "other"), 2);
+    let repo = work.join("batch.git");
+    for _ in 0..2 {
+        let out = lit()
+            .args(args(&key, who))
+            .env("LIT_PYTHON", work.join("missing-python"))
+            .env_remove("LIT_IMPL")
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let blob = git(&repo, &["hash-object", "../replacement"]);
+    assert_eq!(
+        git(
+            &repo,
+            &[
+                "rev-parse",
+                &format!("refs/concurrent-merge/votes/{key}/{blob}")
+            ]
+        ),
+        blob
+    );
+    assert_eq!(
+        fs::read_dir(work.join("state/votes").join(&key))
+            .unwrap()
+            .count(),
+        1
+    );
+    fs::write(&record, format!(r#"{{"mode":null,"authors":["{who}"]}}"#)).unwrap();
+    parity(&args(&key, who), 2);
+    fs::remove_dir_all(work).unwrap();
+}
