@@ -21,12 +21,12 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## One binary
 
-Download the executable for your OS and CPU from the [v0.1.1 release](https://github.com/CakeRepository/lit/releases/tag/v0.1.1). The Linux builds statically link musl. The macOS assets begin with `lit-darwin-` and the Windows assets end in `.exe`. Each platform ships `amd64` (Intel/AMD x86-64) and `arm64` builds.
+Download the executable for your OS and CPU from the [v0.1.2 release](https://github.com/CakeRepository/lit/releases/tag/v0.1.2). The Linux builds statically link musl. The macOS assets begin with `lit-darwin-` and the Windows assets end in `.exe`. Each platform ships `amd64` (Intel/AMD x86-64) and `arm64` builds.
 
 For example, install the Linux amd64 release under your home directory:
 
 ```sh
-release=https://github.com/CakeRepository/lit/releases/download/v0.1.1
+release=https://github.com/CakeRepository/lit/releases/download/v0.1.2
 (
   set -eu
   dir=$(mktemp -d)
@@ -44,7 +44,7 @@ For another platform, download its asset and compare its SHA-256 with the matchi
 
 lit releases itself. When a change to the `VERSION` file lands on main and names a version with no tag yet, the Release workflow builds every platform and publishes that release, tagged at that commit. A `v*` tag pushed by hand publishes its own release the same way.
 
-The `actions/batcher` and `actions/cached-run` composite actions download the release to a private runner temp directory and verify the SHA-256 pinned in the action checkout. The [release notes](https://github.com/CakeRepository/lit/releases/tag/v0.1.1) list the action commit to pin in workflows.
+The `actions/batcher` and `actions/cached-run` composite actions download the release to a private runner temp directory and verify the SHA-256 pinned in the action checkout. Pin a lit main commit whose `actions/lib/install.sh` names the release you want.
 
 All 19 operational commands run in the Rust binary. Contributors can compare one with the Python 3.12+ reference by setting `LIT_REFERENCE` to an absolute path to a trusted copy of the lit source at the same revision. From a fixture directory, `lit parity COMMAND ...` compares exit codes, output, files, Git refs and batch commit IDs in two private copies. For intake fixtures, [the queue replay tests](tests/test_native_intake.py) show how to record GitHub responses and compare outgoing mutations without changing a live repository.
 
