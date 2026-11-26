@@ -136,10 +136,9 @@ fn runs_todays_lit() {
         String::from_utf8_lossy(&out.stderr)
     );
     let receipt = fs::read_to_string(stdout.trim().lines().last().unwrap()).unwrap();
-    assert!(
-        receipt.contains("\"tested\": [\n    1\n  ]") || receipt.contains("\"tested\": [1]"),
-        "{receipt}"
-    );
+    // Python writes text files with CRLF on Windows, so compare without whitespace.
+    let compact: String = receipt.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("\"tested\":[1]"), "{receipt}");
     assert_eq!(
         tree(checkout),
         before,

@@ -46,9 +46,24 @@ pub struct Report {
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// The path canonicalize gives, without Windows' \\?\ prefix on a drive
+/// path, which no other program prints.
+fn real_path(p: &Path) -> Option<PathBuf> {
+    let real = fs::canonicalize(p).ok()?;
+    let text = real.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => Some(PathBuf::from(rest)),
+        _ => Some(real),
+    }
+}
+
 fn work_dir() -> io::Result<PathBuf> {
+    // The temp dir's long, real form: on Windows TEMP can be an 8.3 short
+    // name (RUNNER~1), which the programs under test print in full.
+    let temp = std::env::temp_dir();
+    let temp = real_path(&temp).unwrap_or(temp);
     loop {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = temp.join(format!(
             "lit-parity-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::SeqCst)
@@ -301,7 +316,7 @@ impl Normalizer<'_> {
     fn text(&self, s: &str) -> String {
         let mut s = s.to_string();
         let mut dirs = vec![self.dir.to_string_lossy().into_owned()];
-        if let Ok(real) = fs::canonicalize(self.dir) {
+        if let Some(real) = real_path(self.dir) {
             let real = real.to_string_lossy().into_owned();
             if !dirs.contains(&real) {
                 dirs.push(real);
