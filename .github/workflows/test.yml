@@ -15,3 +15,24 @@ jobs:
       # ubuntu-24.04 ships Python 3.12, so no setup action is needed.
       - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends strace
       - run: python3 -m unittest discover -s tests -v
+  binary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Build every release target
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build -trimpath -o "$RUNNER_TEMP/lit-${target/\//-}" ./cmd/lit
+          done
+          ls -l "$RUNNER_TEMP"/lit-*
+      # lit as root in a container must leave nothing the runner cannot remove.
+      - name: Root hygiene
+        run: scripts/root-hygiene.sh "$RUNNER_TEMP/lit-linux-amd64"
