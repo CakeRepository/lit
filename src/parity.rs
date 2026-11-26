@@ -160,10 +160,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         sides.push(Side {
             name,
             code: exit_code(&out.status),
-            stdout: match paths::parse(&out.stdout) {
-                Ok(v @ (Value::Object(_) | Value::Array(_))) => paths::render(&n.json(v, "")),
-                _ => n.stream(&out.stdout),
-            },
+            stdout: n.stdout(&out.stdout),
             stderr: n.stream(&out.stderr),
             files,
         });
@@ -372,6 +369,33 @@ fn mask_times(s: &str) -> String {
 }
 
 impl Normalizer<'_> {
+    fn stdout(&self, bytes: &[u8]) -> String {
+        let json = |raw: &[u8]| match paths::parse(raw) {
+            Ok(v @ (Value::Object(_) | Value::Array(_))) => Some(paths::render(&self.json(v, ""))),
+            _ => None,
+        };
+        if let Some(result) = json(bytes) {
+            return result;
+        }
+        // An unredirected test inherits stdout. Compare its bytes as text and
+        // compare the CLI's final JSON record structurally, including timings.
+        let mut offset = 0;
+        for line in bytes.split_inclusive(|&c| c == b'\n') {
+            let line_body = line.strip_suffix(b"\n").unwrap_or(line);
+            let line_body = line_body.strip_suffix(b"\r").unwrap_or(line_body);
+            if !line_body.first().is_some_and(u8::is_ascii_whitespace)
+                && matches!(line_body.last(), Some(b'{' | b'['))
+            {
+                let start = offset + line_body.len() - 1;
+                if let Some(tail) = json(&bytes[start..]) {
+                    return self.stream(&bytes[..start]) + &tail;
+                }
+            }
+            offset += line.len();
+        }
+        self.stream(bytes)
+    }
+
     fn stream(&self, bytes: &[u8]) -> String {
         let text = String::from_utf8_lossy(bytes);
         // Python's Windows text streams use CRLF. Rust's println uses LF.

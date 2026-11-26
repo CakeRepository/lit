@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from e2e_github import FakeGitHub, git, lit
+from test_footprint import traced
 
 CALC = textwrap.dedent('''\
     def add(a, b):
@@ -582,7 +583,7 @@ class FootprintSelectionCLI(unittest.TestCase):
                          ["incomplete", "network", "revision", "revision", "changed", "appeared", "untracked", "host"])
         write(network=["AF_INET"])
         self.assertEqual(self.command(*args, "--allow-network", code=1)[0]["verdict"], "reusable")
-        if shutil.which("strace"):
+        if shutil.which("strace") and not traced():
             write()
             passed, changed = self.command(*args, "--verify")
             self.assertEqual([passed["actual_exit_code"], changed["actual_exit_code"]], [0, 1])
@@ -628,6 +629,69 @@ class FootprintSelectionCLI(unittest.TestCase):
         self.assertIn({"kind": "changed", "path": "deps/lock"}, select()["reasons"]["one"])
         (self.repo / "src/a.ts").write_text("dirty")
         self.assertIn("Tracked files differ", self.command(*args, code=2))
+
+
+@unittest.skipUnless(shutil.which("strace") and not traced(), "syscall recording needs an available tracer")
+class FootprintRecordingCLI(unittest.TestCase):
+    def test_real_processes_create_compatible_job_and_unit_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            (repo / "src").mkdir()
+            (repo / "src/input").write_text("hello\n")
+            (repo / "worker").write_text(textwrap.dedent("""\
+                set -eu
+                cat src/input
+                ls src >/dev/null
+                test ! -e src/missing
+                printf produced > created
+                test "$1" != case-b
+                """))
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "record inputs")
+            def run(*args):
+                if os.environ.get("LIT_BIN"):
+                    pair = lit(root, {"LC_ALL": "C"}, "parity", *args)
+                    self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+                    self.assertIn("(exit 0)", pair.stdout)
+                proc = lit(root, {"LC_ALL": "C", "LIT_PYTHON": str(root / "unavailable")}, *args)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                return json.loads(proc.stdout)
+            summary = run("trace", "--repo", "repo", "--commit", "HEAD", "--out", "job.json",
+                          "--log", "job.log", "--ignore-env", "GITHUB_*", "--test", "sh", "worker", "case-b")
+            self.assertEqual(summary["exit_code"], 1)
+            job = json.loads((root / "job.json").read_text())
+            self.assertEqual(set(job["tracked"]), {"worker", "src/input"})
+            self.assertIn("src", job["listings"])
+            self.assertIn("src/missing", job["absent"])
+            self.assertNotIn("created", job["unknown"])
+            self.assertEqual(job["incomplete"], [])
+            self.assertEqual((root / "job.log").read_text(), "hello\n")
+            self.assertFalse((repo / "created").exists())
+            if os.environ.get("LIT_BIN"):
+                # The job can write directly to stdout, even without a final newline.
+                pair = lit(root, {"LC_ALL": "C"}, "parity", "trace", "--repo", "repo", "--commit", "HEAD",
+                           "--out", "job.json", "--test", "sh", "-c", "printf first")
+                self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+            (root / "units.txt").write_text("case-a\ncase-b\ncase-a\n")
+            for flag, args in [
+                ("each", ["--workdir", "repo", "--units-file", "units.txt", "--each", "sh 'worker' \"{}\""]),
+                ("pattern", ["--repo", "repo", "--pattern", r"^sh worker (case-[ab])$",
+                             "--test", "sh", "-c", "sh worker case-a; sh worker case-b"]),
+            ]:
+                result = run("trace-units", "--out", "units.json", "--log", flag + ".log", *args)
+                self.assertEqual((result["units"], result["failed"]), (2, 1))
+                self.assertEqual(result["exit_code"], 1)
+                bundle = json.loads((root / "units.json").read_text())
+                self.assertEqual(set(bundle["units"]), {"case-a", "case-b"})
+                for name, record in bundle["units"].items():
+                    self.assertEqual(record["exit_code"], int(name == "case-b"))
+                    self.assertIn("src/input", record["tracked"])
+                    self.assertEqual(record["incomplete"], [])
+                self.assertEqual(bundle["listing_children"]["src"], ["input"])
+                self.assertEqual(bundle["in_place"], flag == "each")
 
 
 if __name__ == "__main__":
