@@ -54,6 +54,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("cache-report", cache_report::command),
     ("cached-run", footprint::cache::command),
     ("cached-units", footprint::unit_store::command),
+    ("dotnet-units", footprint::dotnet::command),
     ("reuse", footprint::reuse),
     ("select", footprint::select),
     ("trace", footprint::trace_cli::trace),

@@ -94,14 +94,20 @@ pub fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
 }
 
 pub fn parse(text: &str) -> Result<Value, String> {
-    parse_impl(text, None)
+    parse_impl(text, None, None)
 }
 
-fn parse_impl(text: &str, keys: Option<&mut Vec<String>>) -> Result<Value, String> {
+fn parse_impl(
+    text: &str,
+    keys: Option<&mut Vec<String>>,
+    field: Option<&str>,
+) -> Result<Value, String> {
     let mut p = Parser {
         s: text.as_bytes(),
         i: 0,
         keys,
+        field,
+        collect_at: field.is_none().then_some(0),
     };
     p.ws();
     let v = p.value(0)?;
@@ -114,7 +120,7 @@ fn parse_impl(text: &str, keys: Option<&mut Vec<String>>) -> Result<Value, Strin
 
 pub fn ordered_object(text: &str) -> Result<Vec<(String, Value)>, String> {
     let mut keys = Vec::new();
-    let Value::Object(mut map) = parse_impl(text, Some(&mut keys))? else {
+    let Value::Object(mut map) = parse_impl(text, Some(&mut keys), None)? else {
         return Err("Expected a JSON object".into());
     };
     Ok(keys
@@ -126,10 +132,29 @@ pub fn ordered_object(text: &str) -> Result<Vec<(String, Value)>, String> {
         .collect())
 }
 
+/// Preserve the dependency manifest's assembly order, which enters legacy program hashes.
+pub fn ordered_field(text: &str, field: &str) -> Result<Vec<(String, Value)>, String> {
+    let mut keys = Vec::new();
+    let v = parse_impl(text, Some(&mut keys), Some(field))?;
+    let Some(child) = v.get(field) else {
+        return Ok(Vec::new());
+    };
+    let map = child.object()?;
+    Ok(keys
+        .into_iter()
+        .map(|k| {
+            let value = map[&k].clone();
+            (k, value)
+        })
+        .collect())
+}
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
     keys: Option<&'a mut Vec<String>>,
+    field: Option<&'a str>,
+    collect_at: Option<usize>,
 }
 
 impl Parser<'_> {
@@ -176,8 +201,16 @@ impl Parser<'_> {
                         return self.err("expected ':'");
                     }
                     self.ws();
+                    let previous = self.collect_at;
+                    if depth == 0 && self.field == Some(&key) {
+                        if let Some(keys) = &mut self.keys {
+                            keys.clear();
+                        }
+                        self.collect_at = Some(1);
+                    }
                     let v = self.value(depth + 1)?;
-                    if depth == 0 {
+                    self.collect_at = previous;
+                    if self.collect_at == Some(depth) {
                         if let Some(order) = &mut self.keys {
                             if !map.contains_key(&key) {
                                 order.push(key.clone());
