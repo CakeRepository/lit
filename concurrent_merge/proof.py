@@ -196,10 +196,13 @@ LIT_IDENTITY = dict(GIT_AUTHOR_NAME="lit", GIT_AUTHOR_EMAIL="lit@localhost",
                     GIT_COMMITTER_NAME="lit", GIT_COMMITTER_EMAIL="lit@localhost")
 
 
-def _commit_tree(repo, tree, message, parent=None):
+def _commit_tree(repo, tree, message, parent=None, *, date=None):
+    identity = dict(os.environ, **LIT_IDENTITY)
+    if date is not None:
+        identity.update(GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
     return subprocess.run(
         ["git", "-C", str(repo), "commit-tree", tree, "-m", message] + (["-p", parent] if parent else []),
-        check=True, capture_output=True, env=dict(os.environ, **LIT_IDENTITY),
+        check=True, capture_output=True, env=identity,
     ).stdout.decode().strip()
 
 
@@ -211,9 +214,20 @@ def push(proof, sig, remote, repo, *, prefix=REF_PREFIX):
     tree = git(repo, "mktree", data=(
         f"100644 blob {blobs[0]}\tproof.json.gz\n100644 blob {blobs[1]}\tproof.json.gz.sig\n"
     ).encode())
-    made = _commit_tree(repo, tree, f"lit proof for {payload['commit']}")
+    date = f"@{int(datetime.fromisoformat(payload['created']).timestamp())} +0000"
+    made = _commit_tree(repo, tree, f"lit proof for {payload['commit']}", date=date)
     ref = proof_ref(payload["commit"], sig, prefix)
-    git(repo, "push", "--quiet", f"--force-with-lease={ref}:", remote, f"{made}:{ref}")
+    try:
+        git(repo, "push", "--quiet", f"--force-with-lease={ref}:", remote, f"{made}:{ref}")
+    except subprocess.CalledProcessError:
+        # Older clients timestamped the envelope at push time. Accept that ref
+        # only when its complete tree is the exact proof and signature we hold.
+        listed = git(repo, "ls-remote", "--refs", remote, ref).split()
+        if len(listed) != 2 or listed[1] != ref or not HEX.fullmatch(listed[0]):
+            raise
+        git(repo, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, ref)
+        if git(repo, "rev-parse", "--verify", listed[0] + "^{tree}") != tree:
+            raise
     return ref
 
 
