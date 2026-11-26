@@ -11,6 +11,7 @@ with the environment a runner gives it, and compare the folder before and after.
 also prove that nothing is left that the runner's user couldn't remove.
 """
 
+import hashlib
 import os
 import pathlib
 import shutil
@@ -68,11 +69,54 @@ class ActionHygieneTests(unittest.TestCase):
             shutil.copytree(
                 REPO / part, self.root / part, ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
             )
+        self.workspace = self.tmp / "workspace"
+        self.workspace.mkdir()
         self.runner_temp = self.tmp / "_temp"
         self.home = self.runner_temp / "_github_home"
         self.home.mkdir(parents=True)
         for name in ("output", "summary"):
             (self.runner_temp / name).touch()
+        # Exercise the download, pin and dispatch offline. CI also runs both
+        # composite actions against the real release under the runner's account layout.
+        self.tools = self.tmp / "tools"
+        self.tools.mkdir()
+        self.asset = self.tools / "asset"
+        self.asset.write_text("""#!/usr/bin/env bash
+set -eu
+case "$1" in
+  intake) mkdir -p "$HOME/.cache/lit/scratch"; echo "fixture intake" >&2; exit 1 ;;
+  cached-run)
+    while [[ "$1" != --receipt ]]; do shift; done
+    receipt="$2"
+    while [[ "$1" != --test ]]; do shift; done
+    shift
+    status=0
+    "$@" || status=$?
+    echo '{"mode":"shadow","job":"probe","decision":"ran"}' > "$receipt"
+    exit "$status" ;;
+  --internal-action-receipt) echo decision=ran >> "$GITHUB_OUTPUT"; echo 'lit shadow: ran probe' >> "$GITHUB_STEP_SUMMARY" ;;
+  *) exit 2 ;;
+esac
+""")
+        # A local transport copies only the named asset. All checksum and temp
+        # path handling still runs in the production installer.
+        curl = self.tools / "curl"
+        curl.write_text("""#!/usr/bin/env bash
+set -eu
+while [[ "$1" != --output ]]; do shift; done
+[[ "$3" == https://github.com/CakeRepository/lit/releases/download/v0.1.0/lit-* ]]
+cp "$LIT_FIXTURE_ASSET" "$2"
+""")
+        curl.chmod(0o755)
+        # This fixture does not trace. Keep the real-action dispatch path under
+        # test on developer machines without strace.
+        (self.tools / "strace").write_text("#!/bin/sh\nexit 1\n")
+        (self.tools / "strace").chmod(0o755)
+        manifest = self.root / "actions/lib/v0.1.0.sha256"
+        names = [line.split()[1] for line in manifest.read_text().splitlines()]
+        self.assertEqual(len(set(names)), 6)
+        digest = hashlib.sha256(self.asset.read_bytes()).hexdigest()
+        manifest.write_text("".join(f"{digest}  {name}\n" for name in names))
         if AS_ROOT:
             for p in [self.tmp, *self.tmp.rglob("*")]:
                 os.chown(p, RUNNER_UID, RUNNER_UID)
@@ -86,10 +130,13 @@ class ActionHygieneTests(unittest.TestCase):
             env[key] = inputs.get(name, "")
         env.update(
             GITHUB_ACTION_PATH=str(self.root / "actions" / action),
+            GITHUB_WORKSPACE=str(self.workspace),
             GITHUB_OUTPUT=str(self.runner_temp / "output"),
             GITHUB_STEP_SUMMARY=str(self.runner_temp / "summary"),
             RUNNER_TEMP=str(self.runner_temp),
             HOME=str(self.home),
+            PATH=str(self.tools) + os.pathsep + env["PATH"],
+            LIT_FIXTURE_ASSET=str(self.asset),
         )
         env.update(extra_env or {})
         # The runner's own shell line for "shell: bash".
@@ -117,6 +164,8 @@ class ActionHygieneTests(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assert_runner_can_clean(done)
+        self.assertIn("decision=ran", (self.runner_temp / "output").read_text())
+        self.assertIn("lit shadow: ran probe", (self.runner_temp / "summary").read_text())
 
     def test_batcher_leaves_the_runner_cleanable_even_when_it_fails(self):
         # No GitHub here: the pass fails at its first API call, after importing lit and creating its Git cache
@@ -128,6 +177,57 @@ class ActionHygieneTests(unittest.TestCase):
             {"GITHUB_API_URL": "http://127.0.0.1:9", "LIT_GITHUB_API": "rest"},
         )
         self.assertNotEqual(done.returncode, 0)
+        self.assertIn("fixture intake", done.stderr)
+        self.assert_runner_can_clean(done)
+
+    def test_without_strace_still_runs_the_job_and_gives_its_files_back(self):
+        with tempfile.TemporaryDirectory() as path:
+            for name in ("bash", "id", "find", "sort", "stat", "comm", "awk", "chown", "head", "tr", "rm", "touch", "mktemp", "mkdir"):
+                (pathlib.Path(path) / name).symlink_to(shutil.which(name))
+            done = self.run_action("cached-run", {"run": "mkdir out; exit 13", "working-directory": str(self.workspace)},
+                                   {"PATH": path})
+        self.assertEqual(done.returncode, 13, done.stdout + done.stderr)
+        self.assertIn("strace is not installed", done.stdout)
+        self.assertTrue((self.workspace / "out").is_dir())
+        self.assert_runner_can_clean(done)
+
+    def test_selects_the_pinned_asset_for_each_runner(self):
+        script = """
+uname() { if [[ $1 == -s ]]; then echo "$KERNEL"; else echo "$MACHINE"; fi; }
+source "$GITHUB_ACTION_PATH/../lib/guard.sh"
+source "$GITHUB_ACTION_PATH/../lib/install.sh"
+lit_install
+basename "$LIT_BIN"
+"""
+        for kernel, platform in [("Linux", "linux"), ("Darwin", "darwin"), ("MINGW64_NT", "windows")]:
+            for cpu, arch in [("x86_64", "amd64"), ("arm64", "arm64")]:
+                with self.subTest(kernel=kernel, cpu=cpu):
+                    env = dict(os.environ, KERNEL=kernel, MACHINE=cpu, LIT_FIXTURE_ASSET=str(self.asset),
+                               PATH=str(self.tools) + os.pathsep + os.environ["PATH"],
+                               GITHUB_ACTION_PATH=str(self.root / "actions/batcher"),
+                               GITHUB_WORKSPACE=str(self.workspace), RUNNER_TEMP=str(self.runner_temp),
+                               HOME=str(self.home))
+                    done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], env=env,
+                                          capture_output=True, text=True)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    suffix = ".exe" if platform == "windows" else ""
+                    self.assertEqual(done.stdout.strip(), f"lit-{platform}-{arch}{suffix}")
+                    self.assert_runner_can_clean(done)
+
+    def test_damaged_download_never_runs(self):
+        self.asset.write_text("#!/bin/sh\necho UNVERIFIED >&2\nexit 0\n")
+        for action in ("cached-run", "batcher"):
+            with self.subTest(action=action):
+                done = self.run_action(action, {"token": "x", "run": "true", "working-directory": "."})
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("checksum mismatch", done.stderr)
+                self.assertNotIn("UNVERIFIED", done.stderr)
+                self.assert_runner_can_clean(done)
+
+    def test_cached_run_preserves_failure_status_and_outputs(self):
+        done = self.run_action("cached-run", {"run": "exit 17", "working-directory": "."})
+        self.assertEqual(done.returncode, 17, done.stdout + done.stderr)
+        self.assertIn("decision=ran", (self.runner_temp / "output").read_text())
         self.assert_runner_can_clean(done)
 
     def test_guard_removes_what_lit_leaves_and_says_so(self):
@@ -137,7 +237,7 @@ class ActionHygieneTests(unittest.TestCase):
             'touch "$GITHUB_ACTION_PATH/../../concurrent_merge/__pycache__/engine.cpython-313.pyc"\n'
         )
         env = dict(os.environ, GITHUB_ACTION_PATH=str(self.root / "actions" / "batcher"),
-                   RUNNER_TEMP=str(self.runner_temp), HOME=str(self.home))
+                   RUNNER_TEMP=str(self.runner_temp), HOME=str(self.home), GITHUB_WORKSPACE=str(self.workspace))
         done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], env=env, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("::warning title=lit wrote into its action folder::", done.stdout)
@@ -149,10 +249,10 @@ class ActionHygieneTests(unittest.TestCase):
             'source "$GITHUB_ACTION_PATH/../lib/guard.sh"\n'
             'touch "$GITHUB_ACTION_PATH/../../concurrent_merge/__init__.py"\n'  # existing file, now root-touched
             'chown 0:0 "$GITHUB_ACTION_PATH/../../concurrent_merge/__init__.py"\n'
-            'mkdir -p "$HOME/.cache/lit" "$RUNNER_TEMP/lit-work"\n'
+            'mkdir -p "$HOME/.cache/lit" "$RUNNER_TEMP/lit-work" "$GITHUB_WORKSPACE/out"\n'
         )
         env = dict(os.environ, GITHUB_ACTION_PATH=str(self.root / "actions" / "batcher"),
-                   RUNNER_TEMP=str(self.runner_temp), HOME=str(self.home))
+                   RUNNER_TEMP=str(self.runner_temp), HOME=str(self.home), GITHUB_WORKSPACE=str(self.workspace))
         done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], env=env, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         foreign = [str(p) for p in self.tmp.rglob("*") if p.lstat().st_uid != RUNNER_UID]

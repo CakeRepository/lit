@@ -45,19 +45,19 @@ runs:
       run: |
         set -euo pipefail
         # Give git the token only for this step and only for github.com, never in a config file.
-        basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+        basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\r\n')"
         echo "::add-mask::$basic"
         export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
         export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
-        extra=()
-        [ -n "$LIT_CACHE" ] && extra=(--repo-dir "$LIT_CACHE")
-        sizing=()
-        [ -n "$LIT_MAX_BATCH" ] && sizing=(--max-batch "$LIT_MAX_BATCH")
+        args=(intake "$LIT_REPOSITORY" --branch "$LIT_BRANCH" --context "$LIT_CONTEXT")
+        if [[ -n $LIT_MAX_BATCH ]]; then args+=(--max-batch "$LIT_MAX_BATCH"); fi
+        if [[ -n $LIT_CACHE ]]; then args+=(--repo-dir "$LIT_CACHE"); fi
+        args+=(tick --label "$LIT_LABEL")
         # GITHUB_ACTION_PATH, not github.action_path: in a container job only the env var
         # gives the path as the container sees it. The guard keeps lit from leaving anything in
         # the runner's actions folder: a container job runs as root, and one root-owned file there
         # stops the runner from cleaning that folder, so every later job on it fails.
         source "$GITHUB_ACTION_PATH/../lib/guard.sh"
-        python3 -B -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
-          "$GITHUB_ACTION_PATH/../.." intake "$LIT_REPOSITORY" \
-          --branch "$LIT_BRANCH" --context "$LIT_CONTEXT" "${sizing[@]}" "${extra[@]}" tick --label "$LIT_LABEL"
+        source "$GITHUB_ACTION_PATH/../lib/install.sh"
+        lit_install
+        "$LIT_BIN" "${args[@]}"

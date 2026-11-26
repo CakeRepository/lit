@@ -1,0 +1,2 @@
+actions/lib/*.sh text eol=lf
+actions/lib/*.sha256 text eol=lf

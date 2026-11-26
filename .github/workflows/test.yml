@@ -97,19 +97,26 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: apt-get update -q && apt-get install -y -q --no-install-recommends strace
+      - run: apt-get update -q && apt-get install -y -q --no-install-recommends strace curl ca-certificates git
       - name: Run each action's own step as root over runner-owned copies
         run: python3 -B -m unittest tests.test_action_hygiene -v
       # The same check through GitHub's own composite-action runner: hand the checkout to a non-root user,
       # run both actions as root, then nothing in lit's code folders may belong to anyone else.
       - run: chown -R 1001:1001 "$GITHUB_WORKSPACE"
-      - uses: ./actions/cached-run
+      - id: released_cache
+        uses: ./actions/cached-run
         with:
           job: hygiene
-          run: python3 -c 'import sys; sys.path.insert(0, "."); import concurrent_merge.engine'
+          run: |
+            python3 -c 'import sys; sys.path.insert(0, "."); import concurrent_merge.engine'
+            mkdir -p .lit-hygiene && touch .lit-hygiene/job-output
           store: ${{ runner.temp }}/lit-store
+      - name: Check the published binary produced a receipt
+        env:
+          DECISION: ${{ steps.released_cache.outputs.decision }}
+        run: test "$DECISION" = ran
       - uses: ./actions/batcher
-        # No valid token here, so the pass fails at its first GitHub call, after importing lit and creating
+        # No valid token here, so the pass fails at its first GitHub call, after installing the pinned binary and creating
         # its Git cache, which is what has to stay cleanable.
         continue-on-error: true
         with:
@@ -117,5 +124,5 @@ jobs:
           context: Tests / unit
       - name: Nothing in lit's folders belongs to root
         run: |
-          left="$(find "$GITHUB_WORKSPACE/actions" "$GITHUB_WORKSPACE/concurrent_merge" ! -uid 1001 -print)"
+          left="$(find "$GITHUB_WORKSPACE" ! -uid 1001 -print)"
           [ -z "$left" ] || { echo "::error::lit left files the runner's user can't remove:"; echo "$left"; exit 1; }

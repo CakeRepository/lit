@@ -45,39 +45,27 @@ runs:
         LIT_WORKDIR: ${{ inputs.working-directory }}
         LIT_EXTRA: ${{ inputs.extra-args }}
       run: |
-        set -uo pipefail
-        command -v strace >/dev/null || { echo "::warning::strace is not installed; running without lit"; cd "$LIT_WORKDIR" && exec bash -c "$LIT_RUN"; }
+        set -euo pipefail
         # The guard keeps lit from leaving anything in the runner's actions folder: a container
         # job runs as root, and one root-owned file there stops the runner from cleaning that
         # folder, so every later job on it fails.
         source "$GITHUB_ACTION_PATH/../lib/guard.sh"
-        receipt="$(mktemp)"
+        if ! command -v strace >/dev/null; then
+          echo "::warning::strace is not installed; running without lit"
+          cd "$LIT_WORKDIR"
+          bash -c "$LIT_RUN"
+          exit $?
+        fi
+        source "$GITHUB_ACTION_PATH/../lib/install.sh"
+        lit_install
+        receipt="$lit_guard_dir/receipt.json"
+        status=0
         # shellcheck disable=SC2086
-        # Import lit from the action checkout without changing the job's own PYTHONPATH.
-        # GITHUB_ACTION_PATH, not github.action_path: in a container job only the env var
-        # gives the path as the container sees it.
-        python3 -B -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
-          "$GITHUB_ACTION_PATH/../.." cached-run \
+        "$LIT_BIN" cached-run \
           --store "$LIT_STORE" --job "$LIT_JOB" --workdir "$LIT_WORKDIR" \
           --mode "$LIT_MODE" --audit-rate "$LIT_AUDIT" --receipt "$receipt" $LIT_EXTRA \
-          --test bash -c "$LIT_RUN"
-        status=$?
+          --test bash -c "$LIT_RUN" || status=$?
         if [ -s "$receipt" ]; then
-          python3 - "$receipt" <<'PY' >> "$GITHUB_OUTPUT"
-        import json, sys
-        r = json.load(open(sys.argv[1]))
-        print("decision=" + r["decision"])
-        print("prior-commit=" + (r.get("prior_commit") or ""))
-        PY
-          python3 - "$receipt" <<'PY' >> "$GITHUB_STEP_SUMMARY"
-        import json, sys
-        r = json.load(open(sys.argv[1]))
-        line = f"lit {r['mode']}: {r['decision']} {r['job']}"
-        if r.get("prior_commit"):
-            line += f", predicted by the passing run on {r['prior_commit'][:12]}"
-            if r["decision"] != "reused":
-                line += " (matched)" if r.get("sound") else " (DID NOT MATCH)"
-        print(line)
-        PY
+          "$LIT_BIN" --internal-action-receipt "$receipt"
         fi
-        exit $status
+        exit "$status"
