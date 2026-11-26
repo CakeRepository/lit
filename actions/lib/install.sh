@@ -1,7 +1,7 @@
 # Source from a composite action after guard.sh has created its private temp directory.
 lit_install() {
   local platform architecture asset version expected actual
-  version=v0.1.1
+  version=v0.1.2
   case "$(uname -s)" in
     Linux) platform=linux ;;
     Darwin) platform=darwin ;;
