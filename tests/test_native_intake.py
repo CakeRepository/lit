@@ -110,6 +110,76 @@ class IntakeCLI(unittest.TestCase):
         self.assertEqual(git(remote, "rev-parse", "refs/heads/" + self.branch), self.tip)
         self.assertEqual(git(self.remote, "for-each-ref", "--format=%(refname)", "refs/heads/lit"), "")
 
+    def lock(self, record):
+        tree = git(self.remote, "rev-parse", self.tip + "^{tree}")
+        lock = git(self.remote, "commit-tree", tree, "-p", self.tip, "-m", json.dumps(record))
+        git(self.remote, "update-ref", "refs/heads/lit/active/main", lock)
+
+    def refs(self, side, prefix):
+        return git(side / "intake-remote.git", "for-each-ref", "--format=%(refname) %(objectname)", prefix)
+
+    def test_a_closing_batch_swaps_the_rejected_pin_for_a_rejection_at_the_same_head(self):
+        git(self.remote, "update-ref", "refs/heads/" + self.branch, self.tip)
+        for n, head in self.members:
+            git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
+        # Source 1 failed alone; source 2 only rode along and is returned healthy.
+        rejected = self.members[:1]
+        self.lock(dict(base=self.base, tip=self.tip, members=self.members, remaining=[], started=WHEN,
+                       closing=dict(remove=self.members, pending=[], reject=rejected)))
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=77, state="OPEN", headRefOid=self.tip, isCrossRepository=False, url="fixture")
+        ]))))
+        self.rules.append(dict(method="PATCH", path=f"/repos/{REPO}/pulls/77", reply={}))
+        side = self.parity("drain", "--no-wait")
+        self.assertEqual(self.refs(side, "refs/heads/lit"), f"refs/heads/lit/rejected/1 {self.members[0][1]}")
+
+    def test_tick_holds_out_a_rejected_head_batches_the_rest_and_readmits_after_a_new_push(self):
+        (first, head1), (second, head2) = self.members
+        git(self.remote, "update-ref", f"refs/heads/lit/rejected/{first}", head1)
+        # Only source 2 is batched; the rejected source 1 is skipped with a line saying why.
+        work = self.root / "work"
+        git(work, "checkout", "-q", "-B", "solo", self.base)
+        (work / "feature-2").write_text("2")
+        git(work, "add", ".")
+        git(work, "commit", "-qm", "topic 2")
+        repo = Repo(self.remote)
+        snapshot = dict(base=self.base, changes=[dict(number=second, head=head2, author="dev")])
+        with patch.dict(os.environ, SOURCE_DATE_EPOCH=EPOCH):
+            solo, _ = Engine(repo, self.root / "model").batch(self.base, verified_changes(repo, snapshot), lambda _: "model")
+        self.prs[78] = self.pr(78, solo)
+        self.get("issues?state=open&labels=lit-ready&sort=created&direction=asc&per_page=100&page=1",
+                 [dict(number=n, pull_request={}) for n, _ in self.members])
+        self.pulls([1, 2])
+        self.pulls([second])
+        self.pulls([78])
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=78, state="OPEN", headRefOid=solo, isCrossRepository=False, url="fixture")
+        ]))))
+        self.gql("REMOVED_FROM_MERGE_QUEUE_EVENT", dict(repository=dict(pullRequest=dict(timelineItems=dict(nodes=[])))))
+        self.gql("mergeQueue(branch:", dict(repository=dict(mergeQueue=dict(entries=dict(nodes=[])))))
+        self.gql("enqueuePullRequest", dict(enqueuePullRequest=dict(mergeQueueEntry=dict(position=1))),
+                 dict(pr="pr78", head=solo))
+        side = self.parity("--max-batch", "auto", "tick")
+        remote = side / "intake-remote.git"
+        record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
+        self.assertEqual(record["members"], [self.members[1]])
+        self.assertEqual(self.refs(side, "refs/heads/lit/rejected"), f"refs/heads/lit/rejected/1 {head1}")
+        self.assertNotIn("refs/heads/lit/ready/1", self.refs(side, "refs/heads/lit"))
+        # parity() also proves both implementations print the same lines, skip notice included.
+
+    def test_a_pushed_head_replaces_the_stale_rejection_and_is_pinned(self):
+        (first, head1), _ = self.members
+        git(self.remote, "update-ref", f"refs/heads/lit/rejected/{first}", self.base)
+        self.get("issues?state=open&labels=lit-ready&sort=created&direction=asc&per_page=100&page=1",
+                 [dict(number=first, pull_request={})])
+        self.pulls([first])
+        self.gql("REMOVED_FROM_MERGE_QUEUE_EVENT", dict(repository=dict(pullRequest=dict(timelineItems=dict(nodes=[])))))
+        self.gql("enqueuePullRequest", dict(enqueuePullRequest={}), dict(pr="pr1", head=head1))
+        side = self.parity("--original-prs-only", "tick")
+        self.assertEqual(self.refs(side, "refs/heads/lit/rejected"), "")
+        # The new head was admitted: the original-PR path pinned it and submitted it, leaving no refs behind.
+        self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+
     def test_originals_and_exact_head_withdrawal(self):
         for n, head in self.members:
             git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)

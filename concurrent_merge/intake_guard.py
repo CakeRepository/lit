@@ -39,6 +39,10 @@ def pin_ref(number):
     return f"refs/heads/lit/ready/{number}"
 
 
+def reject_ref(number):
+    return f"refs/heads/lit/rejected/{number}"
+
+
 def pull_many(repository, numbers):
     """Read every source and its pin, bounding request size independently of batch size."""
     owner, name = repository.split("/")

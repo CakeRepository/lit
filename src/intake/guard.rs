@@ -4,6 +4,9 @@ pub(super) const PREFIX: &str = "codex/ci/lit-v1/";
 pub(super) fn pin(n: u64) -> String {
     format!("refs/heads/lit/ready/{n}")
 }
+pub(super) fn rejected(n: u64) -> String {
+    format!("refs/heads/lit/rejected/{n}")
+}
 pub(super) fn batch_name(base: &str, tip: &str) -> String {
     format!("{PREFIX}{base}/{tip}")
 }

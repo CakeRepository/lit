@@ -25,6 +25,7 @@ from .intake_guard import (
     graphql,
     manifest,
     pin_ref,
+    reject_ref,
     pull,
     pull_many,
     trusted_status,
@@ -194,6 +195,7 @@ class Intake:
             self.target,
             self.active,
             "refs/heads/lit/ready/*",
+            "refs/heads/lit/rejected/*",
         )
         return {ref: oid for oid, ref in (line.split() for line in output.splitlines())}
 
@@ -240,6 +242,12 @@ class Intake:
             if reason:
                 print(f"Hold #{n}: {reason}", flush=True)
                 continue
+            held = refs.get(reject_ref(n))
+            if held == head:
+                print(f"#{n} failed checks alone at {head[:12]}; waiting for a new push", flush=True)
+                continue
+            if held:
+                edits.append((reject_ref(n), held, ""))
             admitted += 1
             ref = pin_ref(n)
             if refs.get(ref) != head:
@@ -247,7 +255,7 @@ class Intake:
         if not admitted:
             raise Ineligible("None of the requested source revisions are ready")
         if edits:
-            self.fetch_commits(head for _, _, head in edits)
+            self.fetch_commits(head for _, _, head in edits if head)
             self.push(edits)
 
     def record(self, value, parent):
@@ -383,9 +391,14 @@ class Intake:
             )
         return self.batch_pr(record)
 
-    def finish(self, refs, lock, record, remove=(), pending=None):
+    def finish(self, refs, lock, record, remove=(), pending=None, reject=()):
         edits = [
             (pin_ref(n), head, "") for n, head in remove if refs.get(pin_ref(n)) == head
+        ]
+        edits += [
+            (reject_ref(n), refs.get(reject_ref(n), ""), head)
+            for n, head in reject
+            if refs.get(reject_ref(n)) != head
         ]
         pending = record.get("remaining", []) if pending is None else pending
         red = record.get("red")
@@ -508,7 +521,7 @@ class Intake:
             if row["state"] == "OPEN":
                 github.rest("PATCH", f"repos/{self.repository}/pulls/{number}", body=dict(state="closed"))
             plan = record["closing"]
-            self.finish(refs, lock, record, plan["remove"], plan["pending"])
+            self.finish(refs, lock, record, plan["remove"], plan["pending"], plan.get("reject", ()))
             return True
         if row["state"] == "CLOSED":
             print(f"Batch #{number} closed; releasing its pins.", flush=True)
@@ -592,11 +605,23 @@ class Intake:
             if reason == "failed_checks" and len(members) > 1:
                 remove, pending, why = self.blame(record, trusted)
                 print(f"Batch #{number}: {why}", flush=True)
-                self.plan_close(lock, counted(record, len(remove), len(remove)), remove, pending)
+                self.plan_close(
+                    lock,
+                    counted(record, len(remove), len(remove)),
+                    remove,
+                    pending,
+                    **(dict(reject=remove) if remove else {}),
+                )
             else:
                 if reason == "failed_checks":
                     record = counted(record, len(members), len(members))
-                self.plan_close(lock, record, members, record["remaining"])
+                self.plan_close(
+                    lock,
+                    record,
+                    members,
+                    record["remaining"],
+                    **(dict(reject=members) if reason == "failed_checks" else {}),
+                )
             return True
         if (
             status == "SUCCESS"
@@ -725,10 +750,14 @@ class Intake:
         print(f"Enqueued batch #{number} on its exact head.", flush=True)
         return False
 
-    def plan_close(self, lock, record, remove, pending):
+    def plan_close(self, lock, record, remove, pending, reject=()):
         # Persist the split before closing. A second coordinator or a restart can
         # finish the same transition without returning healthy sources by mistake.
-        next_record = dict(record, closing=dict(remove=remove, pending=pending))
+        # `reject` names sources proven red at these heads; finish records them.
+        plan = dict(remove=remove, pending=pending)
+        if reject:
+            plan["reject"] = list(reject)
+        next_record = dict(record, closing=plan)
         self.push([(self.active, lock, self.record(next_record, lock))])
 
     def labelled(self, label):

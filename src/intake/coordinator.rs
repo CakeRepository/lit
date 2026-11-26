@@ -343,12 +343,18 @@ impl Intake<'_> {
                     object([("state", "closed".into())]),
                 )?;
             }
-            self.finish(
+            let reject = plan
+                .get("reject")
+                .map(members)
+                .transpose()?
+                .unwrap_or_default();
+            self.finish_rejecting(
                 refs,
                 lock,
                 row,
                 &members(plan.field("remove")?)?,
                 span(plan, "pending")?,
+                &reject,
             )?;
             return Ok(true);
         }
@@ -447,11 +453,12 @@ impl Intake<'_> {
             if reason == "failed_checks" && m.len() > 1 {
                 let (remove, pending, why) = self.blame(row, &m, trusted, remaining)?;
                 println!("Batch #{n}: {why}");
-                self.close_later(
+                self.close_rejecting(
                     lock,
                     &split::counted(row, remove.len(), remove.len())?,
                     &remove,
                     pending,
+                    &remove,
                 )?;
             } else {
                 let next = if reason == "failed_checks" {
@@ -459,7 +466,12 @@ impl Intake<'_> {
                 } else {
                     row.clone()
                 };
-                self.close_later(lock, &next, &m, remaining)?;
+                let reject = if reason == "failed_checks" {
+                    &m[..]
+                } else {
+                    &[]
+                };
+                self.close_rejecting(lock, &next, &m, remaining, reject)?;
             }
             return Ok(true);
         }
