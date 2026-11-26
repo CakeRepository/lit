@@ -364,15 +364,28 @@ fn native_failure_reports_match_reference_with_repeated_inputs() {
     fs::remove_dir_all(work).unwrap();
 }
 
-#[cfg(unix)]
 #[test]
 fn blame_preserves_distinct_non_unicode_git_paths() {
-    use std::os::unix::ffi::OsStrExt;
+    use std::io::Write;
+    use std::process::Stdio;
     let work = scratch_batch("blame-paths");
-    let src = work.join("src");
-    fs::write(src.join(std::ffi::OsStr::from_bytes(b"\xff")), b"new").unwrap();
-    git(&src, &["add", "."]);
-    git(&src, &["commit", "-qm", "non-UTF8 path"]);
+    let repo = work.join("batch.git");
+    let parent = git(&repo, &["rev-parse", "pr"]);
+    // A Git tree can contain names the host's filesystem cannot check out.
+    let mut import = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(&repo)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stream = format!("commit refs/heads/pr\ncommitter t <t@example.com> 1700000000 +0000\ndata 4\npath\nfrom {parent}\nM 100644 inline \"\\377\"\ndata 3\nnew\n\ndone\n");
+    import
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stream.as_bytes())
+        .unwrap();
+    assert!(import.wait().unwrap().success());
     fs::write(work.join("reads.json"),r#"{"failed_reads":{"bad\udcff":{"tracked":["\udcff"]},"other\udcfe":{"tracked":["\udcfe"]},"literal":{"tracked":["\ufdd0\ue4ff"]}}}"#).unwrap();
     let o = lit()
         .args([
@@ -382,7 +395,7 @@ fn blame_preserves_distinct_non_unicode_git_paths() {
             "--change",
             "PR=pr~..pr",
             "--workdir",
-            "src",
+            "batch.git",
             "--out",
             "verdict.json",
         ])
