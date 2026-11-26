@@ -294,12 +294,23 @@ pub fn python() -> Result<PathBuf, String> {
 }
 
 const LAUNCHER: &str = "import sys; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = 'lit'; \
+from concurrent_merge import readers; readers.native_program = sys.argv.pop(1); \
+readers.native_suffixes = sys.argv.pop(1).split(','); \
 from concurrent_merge.cli import main; sys.exit(main())";
 
 /// Builds the Python process for args. dir is the folder extract made.
 pub fn command(python: &Path, dir: &Path, args: &[String]) -> Command {
     let mut cmd = Command::new(python);
-    cmd.args(["-I", "-B", "-c", LAUNCHER]).arg(dir).args(args);
+    let binary = if std::env::var("LIT_IMPL").as_deref() == Ok("python") {
+        None
+    } else {
+        std::env::current_exe().ok()
+    };
+    cmd.args(["-I", "-B", "-c", LAUNCHER])
+        .arg(dir)
+        .arg(binary.unwrap_or_default())
+        .arg(crate::readers::suffixes().join(","))
+        .args(args);
     // -B already stops bytecode; the variable also covers any Python the command starts.
     cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     cmd

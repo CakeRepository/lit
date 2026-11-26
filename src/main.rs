@@ -17,6 +17,7 @@ mod parity;
 mod parity_land;
 mod propose;
 mod pyfallback;
+mod readers;
 mod sha256;
 mod snapshot;
 mod sys;
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
+        Some("--internal-outline") if args.len() == 2 => readers::command(&args[1]),
         Some("version" | "--version") if args.len() == 1 => {
             println!("{}", version_line());
             0
