@@ -1,4 +1,5 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
+mod csharp;
 mod javascript;
 mod json_reader;
 mod markdown;
@@ -50,53 +51,67 @@ enum Reader {
     Text(fn(&str) -> Option<Vec<Node>>),
     Encoded(fn(&[u8]) -> Option<Vec<Node>>),
 }
-const READERS: &[(&[&str], Reader)] = &[
-    (
-        &[".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"],
-        Reader::Dialect(javascript::outline),
-    ),
-    (
-        &[".ps1", ".psm1", ".psd1"],
-        Reader::Encoded(powershell::outline),
-    ),
-    (&[".md", ".markdown"], Reader::Text(markdown::outline)),
-    (&[".json"], Reader::Text(json_reader::outline)),
-    (&[".yaml", ".yml"], Reader::Text(yaml::outline)),
-    (&[".py", ".pyi", ".pyw"], Reader::Encoded(python::outline)),
+struct Language {
+    name: &'static str,
+    suffixes: &'static [&'static str],
+    reader: Reader,
+}
+
+const LANGUAGES: &[Language] = &[
+    Language {
+        name: "javascript",
+        suffixes: &[".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"],
+        reader: Reader::Dialect(javascript::outline),
+    },
+    Language {
+        name: "powershell",
+        suffixes: &[".ps1", ".psm1", ".psd1"],
+        reader: Reader::Encoded(powershell::outline),
+    },
+    Language {
+        name: "markdown",
+        suffixes: &[".md", ".markdown"],
+        reader: Reader::Text(markdown::outline),
+    },
+    Language {
+        name: "json",
+        suffixes: &[".json"],
+        reader: Reader::Text(json_reader::outline),
+    },
+    Language {
+        name: "csharp",
+        suffixes: &[".cs"],
+        reader: Reader::Text(csharp::outline),
+    },
+    Language {
+        name: "yaml",
+        suffixes: &[".yml", ".yaml"],
+        reader: Reader::Text(yaml::outline),
+    },
+    Language {
+        name: "python",
+        suffixes: &[".py", ".pyi", ".pyw"],
+        reader: Reader::Encoded(python::outline),
+    },
 ];
 
 pub fn suffixes() -> Vec<&'static str> {
-    READERS
+    LANGUAGES
         .iter()
-        .flat_map(|(exts, _)| exts.iter().copied())
+        .flat_map(|l| l.suffixes.iter().copied())
         .collect()
 }
 
-pub fn language(suffix: &str) -> Option<&'static str> {
-    match suffix {
-        ".md" | ".markdown" => Some("markdown"),
-        ".json" => Some("json"),
-        ".yaml" | ".yml" => Some("yaml"),
-        ".py" | ".pyi" | ".pyw" => Some("python"),
-        ".js" | ".mjs" | ".cjs" | ".jsx" | ".ts" | ".tsx" | ".mts" | ".cts" => Some("javascript"),
-        ".cs" => Some("csharp"),
-        ".ps1" | ".psm1" | ".psd1" => Some("powershell"),
-        _ => None,
-    }
+fn find(suffix: &str) -> Option<&'static Language> {
+    LANGUAGES.iter().find(|l| l.suffixes.contains(&suffix))
 }
 
-pub fn resolve(suffix: &str, blobs: [&[u8]; 3]) -> Result<Option<Vec<u8>>, String> {
-    if suffixes().contains(&suffix) {
-        return Ok(structure::merge(suffix, blobs));
-    }
-    if language(suffix).is_none() {
-        return Ok(None);
-    }
-    crate::pyfallback::merge_file(suffix, blobs)
+pub fn language(suffix: &str) -> Option<&'static str> {
+    Some(find(suffix)?.name)
 }
 
 fn outline(suffix: &str, bytes: &[u8]) -> Option<Vec<Node>> {
-    let (_, reader) = READERS.iter().find(|(exts, _)| exts.contains(&suffix))?;
+    let reader = &find(suffix)?.reader;
     if bytes.contains(&0) {
         return None;
     }

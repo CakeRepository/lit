@@ -193,7 +193,7 @@ impl Compare<'_> {
             if !line && trees::exact_union(self.repo, &ids, &data, &data[3])? {
                 return Ok(Decision::Keep);
             }
-            let result = readers::resolve(&ext, [&data[0], &data[1], &data[2]])?;
+            let result = readers::structure::merge(&ext, [&data[0], &data[1], &data[2]]);
             if line {
                 if let Some(bytes) = result {
                     let id = self
