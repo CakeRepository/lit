@@ -731,7 +731,7 @@ class IntakeCommandTests(unittest.TestCase):
         intake_main.assert_called_once_with(
             ["--repo-dir", "/tmp/lit", "tick", "--label", "lit-ready"],
             repository="owner/repo", branch="dev", context="CI / tests", original_prs_only=False,
-            max_batch=None,
+            max_batch=None, direct_context=None,
         )
 
     def test_cli_reads_max_batch_as_auto_or_a_number(self):

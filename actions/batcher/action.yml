@@ -25,6 +25,14 @@ inputs:
   cache-dir:
     description: Bare Git copy lit reuses between passes (keep it on a persistent runner)
     default: ""
+  direct-context:
+    description: >-
+      Full-suite status that lets a batch land on the branch itself, skipping the merge queue,
+      when every PR in it passed that status at its exact head and no two of them (nor the
+      branch since a PR was tested) change the same file. Any other batch, or one the branch
+      refuses, goes through the merge queue. The token's App must be allowed to bypass the
+      branch's rules. Empty always uses the merge queue.
+    default: ""
   max-batch:
     description: >-
       Most ready PRs in one batch: a number, or "auto" to size each batch from the recent
@@ -42,6 +50,7 @@ runs:
         LIT_REPOSITORY: ${{ inputs.repository }}
         LIT_CACHE: ${{ inputs.cache-dir }}
         LIT_MAX_BATCH: ${{ inputs.max-batch }}
+        LIT_DIRECT_CONTEXT: ${{ inputs.direct-context }}
       run: |
         set -euo pipefail
         # Give git the token only for this step and only for github.com, never in a config file.
@@ -51,6 +60,7 @@ runs:
         export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
         args=(intake "$LIT_REPOSITORY" --branch "$LIT_BRANCH" --context "$LIT_CONTEXT")
         if [[ -n $LIT_MAX_BATCH ]]; then args+=(--max-batch "$LIT_MAX_BATCH"); fi
+        if [[ -n $LIT_DIRECT_CONTEXT ]]; then args+=(--direct-context "$LIT_DIRECT_CONTEXT"); fi
         if [[ -n $LIT_CACHE ]]; then args+=(--repo-dir "$LIT_CACHE"); fi
         args+=(tick --label "$LIT_LABEL")
         # GITHUB_ACTION_PATH, not github.action_path: in a container job only the env var

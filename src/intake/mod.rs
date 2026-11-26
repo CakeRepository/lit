@@ -1,6 +1,7 @@
 //! Coordinate reviewed source revisions through the protected GitHub merge queue.
 mod audit;
 mod coordinator;
+mod direct;
 mod guard;
 mod ledger;
 mod split;
@@ -123,6 +124,7 @@ struct Intake<'a> {
     active: String,
     originals: bool,
     limit: Limit,
+    direct: Option<String>,
     verified: Option<(String, String, Vec<Member>)>,
     preview: Option<(String, String, bool)>,
     last_wait: Option<(u64, String, i64)>,
@@ -133,6 +135,7 @@ fn execute(argv: &[String], default_cache: &mut Option<PathBuf>) -> Result<()> {
         argv,
         &[
             "--context",
+            "--direct-context",
             "--branch",
             "--max-batch",
             "--repo-dir",
@@ -243,6 +246,7 @@ fn execute(argv: &[String], default_cache: &mut Option<PathBuf>) -> Result<()> {
         active,
         originals: a.has("--original-prs-only"),
         limit,
+        direct: a.optional("--direct-context").map(str::to_owned),
         verified: None,
         preview: None,
         last_wait: None,

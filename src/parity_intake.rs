@@ -62,6 +62,7 @@ impl Replay {
                     "--repo-dir",
                     "--branch",
                     "--context",
+                    "--direct-context",
                     "--label",
                     "--max-batch",
                     "--since",

@@ -112,6 +112,10 @@ impl Sources<'_> {
             .ok_or_else(|| "Missing source PR".into())
     }
     pub fn trusted<'a>(&self, pr: &'a Value, head: &str) -> Option<&'a Value> {
+        self.status(pr, head, self.context)
+    }
+    /// The status `context` that this repository's own workflow set on the PR's exact head.
+    pub fn status<'a>(&self, pr: &'a Value, head: &str, context: &str) -> Option<&'a Value> {
         let commit = pr
             .get("commits")?
             .get("nodes")?
@@ -129,7 +133,7 @@ impl Sources<'_> {
             .ok()?
             .iter()
             .find(|s| {
-                string(s, "context") == Some(self.context)
+                string(s, "context") == Some(context)
                     && s.get("creator").and_then(|c| string(c, "login")) == Some("github-actions")
                     && string(s, "targetUrl")
                         .and_then(|u| run_id(self.repository, u))

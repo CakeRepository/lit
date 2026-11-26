@@ -411,6 +411,19 @@ impl Intake<'_> {
         pending: Vec<Value>,
         reject: &[Member],
     ) -> Result<()> {
+        self.push(self.finish_edits(refs, lock, record, remove, pending, reject)?)
+    }
+    /// The ref updates that close `record`: drop the pins of `remove`, record `reject`, and
+    /// leave `pending` (or nothing) as the next record.
+    pub(super) fn finish_edits(
+        &self,
+        refs: &Refs,
+        lock: &str,
+        record: &Value,
+        remove: &[Member],
+        pending: Vec<Value>,
+        reject: &[Member],
+    ) -> Result<Vec<Edit>> {
         let mut edits: Vec<_> = remove
             .iter()
             .filter(|(n, h)| refs.get(&pin(*n)) == Some(h))
@@ -441,6 +454,6 @@ impl Intake<'_> {
             String::new()
         };
         edits.push((self.active.clone(), lock.into(), next));
-        self.push(edits)
+        Ok(edits)
     }
 }

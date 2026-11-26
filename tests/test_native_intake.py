@@ -252,6 +252,67 @@ class IntakeCLI(unittest.TestCase):
         self.assertEqual(git(side / "intake-remote.git", "for-each-ref", "--format=%(refname)", "refs/heads/lit"), "")
 
 
+    def full_suite(self, n, state="SUCCESS"):
+        status = dict(self.prs[n]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0], context="full",
+                      state=state, targetUrl=f"https://github.com/{REPO}/actions/runs/124")
+        self.prs[n]["commits"]["nodes"][0]["commit"]["status"]["contexts"].append(status)
+
+    def pinned_batch(self):
+        for n, head in self.members:
+            git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
+        self.lock(dict(base=self.base, tip=self.tip, members=self.members, remaining=[], started=WHEN))
+
+    def test_a_batch_whose_prs_passed_the_full_suite_lands_on_main_itself(self):
+        self.pinned_batch()
+        self.full_suite(1)
+        self.full_suite(2)
+        self.pulls([1, 2])
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.tip)
+        self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+
+    def test_a_pr_without_the_full_suite_sends_the_batch_through_the_queue(self):
+        self.pinned_batch()
+        self.full_suite(1)
+        self.pulls([1, 2])
+        self.pulls([77])
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=77, state="OPEN", headRefOid=self.tip, isCrossRepository=False, url="fixture")
+        ]))))
+        self.gql("REMOVED_FROM_MERGE_QUEUE_EVENT", dict(repository=dict(pullRequest=dict(timelineItems=dict(nodes=[])))))
+        self.gql("mergeQueue(branch:", dict(repository=dict(mergeQueue=dict(entries=dict(nodes=[])))))
+        self.gql("enqueuePullRequest", dict(enqueuePullRequest=dict(mergeQueueEntry=dict(position=1))),
+                 dict(pr="pr77", head=self.tip))
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.base)
+        record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
+        self.assertEqual(record["direct"], "#2 has no full status")
+
+    def test_main_refusing_lit_s_push_sends_the_batch_through_the_queue(self):
+        self.pinned_batch()
+        self.full_suite(1)
+        self.full_suite(2)
+        self.pulls([1, 2])
+        self.pulls([77])
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nwhile read old new ref; do [ \"$ref\" = refs/heads/main ] && "
+                        "{ echo 'protected branch' >&2; exit 1; }; done; exit 0\n")
+        hook.chmod(0o755)
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=77, state="OPEN", headRefOid=self.tip, isCrossRepository=False, url="fixture")
+        ]))))
+        self.gql("REMOVED_FROM_MERGE_QUEUE_EVENT", dict(repository=dict(pullRequest=dict(timelineItems=dict(nodes=[])))))
+        self.gql("mergeQueue(branch:", dict(repository=dict(mergeQueue=dict(entries=dict(nodes=[])))))
+        self.gql("enqueuePullRequest", dict(enqueuePullRequest=dict(mergeQueueEntry=dict(position=1))),
+                 dict(pr="pr77", head=self.tip))
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.base)
+        record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
+        self.assertEqual(record["direct"], "main refused lit's push: protected branch")
+
     def test_a_failed_batch_returns_the_implicated_source_and_rechecks_the_other(self):
         from zipfile import ZipFile, ZIP_DEFLATED
         first = git(self.remote, "rev-parse", self.tip + "^1")

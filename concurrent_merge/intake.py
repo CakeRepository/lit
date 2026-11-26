@@ -188,13 +188,53 @@ def batch_limit(max_batch, record):
     return max_batch
 
 
+DIRECT_PATIENCE = 90 * 60  # seconds to wait for a member's full-suite status
+
+
+def refusal(said):
+    """The line of a refused push that says why: what the remote said, else git's rejection line."""
+    said = said.removeprefix("git push:")
+    lines = [line.strip() for line in said.splitlines()]
+    remote = next(
+        (l[len("remote:"):].strip() for l in lines if l.startswith("remote:") and l[len("remote:"):].strip()),
+        None,
+    )
+    line = remote or next((l for l in lines if "rejected]" in l), None)
+    line = line or next((l for l in reversed(lines) if l), "")
+    return line[:200]
+
+
+def direct_overlap(branch, footprints, extra):
+    """Why a batch can't land directly, or None when its members' own checks cover it.
+
+    Each footprint is (number, own, drift, differ): the files the member changed, the files
+    the branch changed since the member's base, and the files where the member head and the
+    batch tip differ. `extra` lists what the tip changes on the base."""
+    seen = {}
+    for number, own, drift, differ in footprints:
+        drift, differ = set(drift), set(differ)
+        for path in own:
+            if path in drift:
+                return f"#{number} and {branch} both changed {path}"
+            if path in seen:
+                return f"#{seen[path]} and #{number} both changed {path}"
+            seen[path] = number
+            if path in differ:
+                return f"the batch does not keep #{number}'s {path}"
+    return next((f"the batch changes {p} outside its PRs" for p in extra if p not in seen), None)
+
+
 class Intake:
-    def __init__(self, repository, branch, context, repo, *, original_prs_only=False, max_batch=None):
+    def __init__(
+        self, repository, branch, context, repo, *, original_prs_only=False, max_batch=None,
+        direct_context=None,
+    ):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
             raise ValueError("Invalid GitHub repository")
         self.repo = repo
         self.original_prs_only = original_prs_only
         self.max_batch = max_batch
+        self.direct_context = direct_context
         self.repository, self.branch, self.context = repository, branch, context
         self.url = "https://github.com/" + repository + ".git"
         self.target = "refs/heads/" + branch
@@ -409,6 +449,10 @@ class Intake:
         return self.batch_pr(record)
 
     def finish(self, refs, lock, record, remove=(), pending=None, reject=()):
+        self.push(self.finish_edits(refs, lock, record, remove, pending, reject))
+
+    def finish_edits(self, refs, lock, record, remove=(), pending=None, reject=()):
+        """The ref updates that close `record`, leaving `pending` (or nothing) as the next record."""
         edits = [
             (pin_ref(n), head, "") for n, head in remove if refs.get(pin_ref(n)) == head
         ]
@@ -426,7 +470,7 @@ class Intake:
             next_lock = self.record(dict(remaining=[], red=red), lock)
         else:
             next_lock = ""
-        self.push([*edits, (self.active, lock, next_lock)])
+        return [*edits, (self.active, lock, next_lock)]
 
     def advance_individual(self, refs, lock, record):
         number, head = record["members"][0]
@@ -512,6 +556,9 @@ class Intake:
     def advance(self, refs, lock, record):
         if record.get("individual"):
             return self.advance_individual(refs, lock, record)
+        progress = self.direct(refs, lock, record)
+        if progress is not None:
+            return progress
         try:
             row = self.batch_pr(record)
         except Ineligible as error:
@@ -651,6 +698,70 @@ class Intake:
             record,
             f"batch checks {status or 'pending'}, GitHub merge state {pr['mergeStateStatus']}",
         )
+
+    def queue_instead(self, lock, record, why):
+        print(f"Batch {record['tip'][:12]} goes through the merge queue: {why}", flush=True)
+        self.push([(self.active, lock, self.record(dict(record, direct=why), lock))])
+        return True
+
+    def direct(self, refs, lock, record):
+        """Land the batch on the branch itself when its members' own full-suite checks cover it.
+
+        Returns the pass's progress, or None to use the merge queue."""
+        context, members = self.direct_context, record["members"]
+        if not context or "direct" in record or not members:
+            return None
+        base, tip, target = record["base"], record["tip"], refs[self.target]
+        self.fetch_commits([target, base, tip])
+        short = tip[:12]
+        landed = counted(record, 0, len(members))
+        ancestor = self.repo.run("merge-base", "--is-ancestor", tip, target, check=False)
+        if ancestor.returncode == 0:
+            print(f"Landed batch {short} directly with {len(members)} source PRs.", flush=True)
+            self.finish(refs, lock, landed, members)
+            return True
+        if target != base:
+            return self.queue_instead(lock, record, f"{self.branch} moved since the batch was built")
+        try:
+            verify_sources(self.repository, self.branch, members, self.context)
+        except Ineligible:
+            return None
+        sources = pull_many(self.repository, [n for n, _ in members])
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(record["started"])).total_seconds()
+        for number, head in members:
+            pr = sources[number][0]
+            if pr["reviewDecision"] not in (None, "APPROVED"):
+                return self.queue_instead(lock, record, f"#{number} is not approved")
+            status = trusted_status(self.repository, pr, head, context)
+            state = status and status.get("state")
+            if state == "SUCCESS":
+                continue
+            if state is None:
+                return self.queue_instead(lock, record, f"#{number} has no {context} status")
+            if state in ("PENDING", "EXPECTED") and age < DIRECT_PATIENCE:
+                wait = f"waiting for #{number}'s {context} before landing directly"
+                print(f"Batch {short}: {wait}", flush=True)
+                return False
+            return self.queue_instead(lock, record, f"#{number}'s {context} is {state}")
+        names = lambda a, b: sorted(changed_paths(self.repo.path, a, b))
+        footprints = []
+        for number, head in members:
+            start = self.repo.out("merge-base", head, base)
+            footprints.append((number, names(start, head), names(start, base), names(head, tip)))
+        why = direct_overlap(self.branch, footprints, names(base, tip))
+        if why:
+            return self.queue_instead(lock, record, why)
+        edits = self.finish_edits(refs, lock, landed, members)
+        try:
+            self.push([*edits, (self.target, base, tip)])
+        except RuntimeError as error:
+            return self.queue_instead(lock, record, f"{self.branch} refused lit's push: {refusal(str(error))}")
+        listed = ", ".join(f"#{n}" for n, _ in members)
+        print(
+            f"Landed batch {short} directly on {self.branch} with {len(members)} source PRs: {listed}.",
+            flush=True,
+        )
+        return True
 
     def blame(self, number, record, trusted):
         """Who leaves a failed batch, from what its failing test files read (see split_failed)."""
@@ -892,7 +1003,10 @@ class Intake:
                 return
 
 
-def main(argv=None, *, repository, branch="main", context, original_prs_only=False, max_batch=None):
+def main(
+    argv=None, *, repository, branch="main", context, original_prs_only=False, max_batch=None,
+    direct_context=None,
+):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--repo-dir",
@@ -933,7 +1047,8 @@ def main(argv=None, *, repository, branch="main", context, original_prs_only=Fal
     if repo.out("rev-parse", "--is-bare-repository") != "true":
         parser.error("--repo-dir must be a dedicated bare repository")
     api = Intake(
-        repository, branch, context, repo, original_prs_only=original_prs_only, max_batch=max_batch
+        repository, branch, context, repo, original_prs_only=original_prs_only, max_batch=max_batch,
+        direct_context=direct_context,
     )
     if args.action == "withdraw":
         if not re.fullmatch(r"[0-9a-f]{40}", args.head):

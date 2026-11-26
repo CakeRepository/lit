@@ -9,7 +9,9 @@ from unittest.mock import Mock, patch
 
 from concurrent_merge.engine import Repo
 from concurrent_merge.github import GitHubError
-from concurrent_merge.intake import Intake, member_changes, queue_runs, run_receipts, split_failed
+from concurrent_merge.intake import (
+    Intake, direct_overlap, member_changes, refusal, queue_runs, run_receipts, split_failed,
+)
 
 MEMBERS = [[1, "a"], [2, "b"], [3, "c"], [4, "d"]]
 CHANGES = {"1": {"web/a.ts"}, "2": {"web/b.ts"}, "3": {"psa/c.sql"}, "4": {"docs/d.md"}}
@@ -107,6 +109,29 @@ class QueueRunTests(unittest.TestCase):
         ]
         self.assertEqual(queue_runs(rows, "main", 12), ["8", "9"])
         self.assertEqual(queue_runs(rows, "main", 13), [])
+
+
+class DirectTests(unittest.TestCase):
+    def test_disjoint_members_land_and_any_shared_file_goes_to_the_queue(self):
+        clean = [(1, ["web/a.ts"], ["docs/x.md"], ["docs/x.md", "psa/b.sql"]), (2, ["psa/b.sql"], [], ["web/a.ts"])]
+        self.assertIsNone(direct_overlap("main", clean, ["web/a.ts", "psa/b.sql"]))
+        shared = [clean[0], (2, ["psa/b.sql", "web/a.ts"], [], ["web/a.ts"])]
+        self.assertEqual(direct_overlap("main", shared, []), "#1 and #2 both changed web/a.ts")
+        drift = [(1, ["web/a.ts"], ["web/a.ts"], []), clean[1]]
+        self.assertEqual(direct_overlap("main", drift, []), "#1 and main both changed web/a.ts")
+        lost = [clean[0], (2, ["psa/b.sql"], [], ["psa/b.sql"])]
+        self.assertEqual(direct_overlap("main", lost, []), "the batch does not keep #2's psa/b.sql")
+        self.assertEqual(direct_overlap("main", clean, ["web/a.ts", "ci.yml"]), "the batch changes ci.yml outside its PRs")
+
+
+class RefusalTests(unittest.TestCase):
+    def test_a_refusal_names_what_the_remote_said(self):
+        said = ("git push: remote: \nremote: error: GH013: Repository rule violations found for refs/heads/main.\n"
+                " ! [remote rejected] main -> main (push declined due to repository rule violations)\n"
+                "error: failed to push some refs to 'x'")
+        self.assertEqual(refusal(said), "error: GH013: Repository rule violations found for refs/heads/main.")
+        self.assertEqual(refusal("git push: ! [rejected] main -> main (stale info)\nerror: failed"),
+                         "! [rejected] main -> main (stale info)")
 
 
 class SingletonTests(unittest.TestCase):
