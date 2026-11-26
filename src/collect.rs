@@ -115,13 +115,7 @@ fn valid_part(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
 }
 
-pub fn live(
-    client: &Client,
-    repository: &str,
-    branch: &str,
-    selection: Option<&Value>,
-    pattern: Option<&Regex>,
-) -> Result<Value, String> {
+pub fn repository_parts(repository: &str) -> Result<(&str, &str), String> {
     let (owner, name) = repository
         .split_once('/')
         .ok_or("Expected a GitHub owner/repository")?;
@@ -131,6 +125,17 @@ pub fn live(
     {
         return Err("Expected a GitHub owner/repository".into());
     }
+    Ok((owner, name))
+}
+
+pub fn live(
+    client: &Client,
+    repository: &str,
+    branch: &str,
+    selection: Option<&Value>,
+    pattern: Option<&Regex>,
+) -> Result<Value, String> {
+    let (owner, name) = repository_parts(repository)?;
     if let Some(selection) = selection {
         if ["prs", "label", "min_reviews"]
             .iter()

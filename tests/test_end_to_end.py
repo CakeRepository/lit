@@ -192,6 +192,11 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(s.passes(result["final"]))
         self.assertEqual(s.remote_main(), s.base, "run leaves the target alone")
 
+        if os.environ.get("LIT_BIN"):
+            comparison = s.lit("parity", "--", "land", str(receipt), "--repo", "batch.git")
+            self.assertIn("matches between Python and Rust (exit 0)", comparison.stdout)
+            self.assertEqual(s.remote_main(), s.base, "parity must only push to its private remotes")
+            s.env["LIT_PYTHON"] = str(s.root / "no-python")
         s.lit("land", str(receipt), "--repo", "batch.git")
         main = s.remote_main()
         self.assertEqual(main, result["final"])
@@ -213,6 +218,9 @@ class EndToEnd(unittest.TestCase):
         git(s.work, "commit", "-qm", "someone else landed")
         git(s.work, "push", "-q", str(s.gh.remote), "main")
         moved = s.remote_main()
+        if os.environ.get("LIT_BIN"):
+            proc = s.lit("parity", "land", str(receipt), "--repo", "batch.git")
+            self.assertIn("matches between Python and Rust (exit 2)", proc.stdout)
         proc = s.lit("land", str(receipt), "--repo", "batch.git", ok=(2,))
         self.assertIn("collect and test again", proc.stderr)
         self.assertEqual(s.remote_main(), moved, "the remote keeps the commit that won the race")

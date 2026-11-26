@@ -1,0 +1,8 @@
+usage: concurrent-merge land [-h] --repo REPO receipt
+
+positional arguments:
+  receipt
+
+options:
+  -h, --help   show this help message and exit
+  --repo REPO

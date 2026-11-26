@@ -641,7 +641,7 @@ def land(args):
     snapshot = receipt["snapshot"]
     repo = Repo(args.repo)
     base, final = snapshot["base"], receipt["final"]
-    if not receipt["tested"] or final != repo.out(
+    if not receipt["tested"] or not set(receipt["tested"]) <= {p["number"] for p in snapshot["changes"]} or final != repo.out(
         "rev-parse", "refs/concurrent-merge/tested/" + args.receipt.parent.name
     ):
         raise ValueError("No matching tested batch ref")
