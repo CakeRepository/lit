@@ -1,4 +1,5 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
+mod javascript;
 mod json_reader;
 mod markdown;
 mod powershell;
@@ -45,10 +46,15 @@ fn write_nodes(nodes: &[Node], out: &mut String) {
 }
 
 enum Reader {
+    Dialect(fn(&str, &str) -> Option<Vec<Node>>),
     Text(fn(&str) -> Option<Vec<Node>>),
     Encoded(fn(&[u8]) -> Option<Vec<Node>>),
 }
 const READERS: &[(&[&str], Reader)] = &[
+    (
+        &[".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"],
+        Reader::Dialect(javascript::outline),
+    ),
     (
         &[".ps1", ".psm1", ".psd1"],
         Reader::Encoded(powershell::outline),
@@ -95,6 +101,7 @@ fn outline(suffix: &str, bytes: &[u8]) -> Option<Vec<Node>> {
         return None;
     }
     match reader {
+        Reader::Dialect(read) => read(std::str::from_utf8(bytes).ok()?, suffix),
         Reader::Text(read) => read(std::str::from_utf8(bytes).ok()?),
         Reader::Encoded(read) => read(bytes),
     }
