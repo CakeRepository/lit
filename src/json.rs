@@ -405,12 +405,14 @@ fn ascii_bytes(bytes: &[u8], out: &mut String) {
     out.push('"');
 }
 
-fn quote(s: &str, out: &mut String) {
+pub(crate) fn quote(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
