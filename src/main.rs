@@ -12,7 +12,9 @@ mod git;
 mod github;
 mod handback;
 mod json;
+mod land;
 mod parity;
+mod parity_land;
 mod pyfallback;
 mod sha256;
 mod snapshot;
@@ -28,7 +30,11 @@ type Native = fn(&[String]) -> i32;
 
 /// The commands written in Rust. Every other command runs on the embedded
 /// Python. A command joins this table once its parity cases match.
-const NATIVE: &[(&str, Native)] = &[("agree", agree::command), ("collect", collect::command)];
+const NATIVE: &[(&str, Native)] = &[
+    ("agree", agree::command),
+    ("collect", collect::command),
+    ("land", land::command),
+];
 
 fn native(name: &str) -> Option<Native> {
     NATIVE.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)

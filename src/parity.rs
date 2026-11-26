@@ -81,6 +81,17 @@ fn work_dir() -> io::Result<PathBuf> {
 pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
     let work = work_dir().map_err(|e| (e.to_string(), None))?;
     let fail = |e: String| (e, Some(work.clone()));
+    let landing = if o.args.first().is_some_and(|a| a == "land")
+        && !o
+            .args
+            .iter()
+            .take_while(|a| a.as_str() != "--")
+            .any(|a| a == "--help" || a == "-h")
+    {
+        Some(crate::parity_land::Landing::prepare(&o.source, &work, &o.args[1..]).map_err(fail)?)
+    } else {
+        None
+    };
     let mut sides = Vec::new();
     for (name, impl_) in [
         ("python", "python"),
@@ -88,8 +99,14 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
     ] {
         let dir = work.join(name);
         copy_tree(&o.source, &dir).map_err(|e| fail(format!("copy inputs: {e}")))?;
-        let out = Command::new(&o.program)
-            .args(&o.args)
+        let mut cmd = Command::new(&o.program);
+        let target = work.join(format!("{name}-landing.git"));
+        if let Some(landing) = &landing {
+            landing.configure(&mut cmd, &dir, &target).map_err(fail)?;
+        } else {
+            cmd.args(&o.args);
+        }
+        let out = cmd
             .current_dir(&dir)
             .env("SOURCE_DATE_EPOCH", &o.epoch)
             .env("LIT_IMPL", impl_)
@@ -101,12 +118,19 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
             renames,
             ignore: &o.ignore,
         };
+        let mut files = n.tree().map_err(fail)?;
+        if landing.is_some() {
+            files.insert(
+                "(landing target refs)".into(),
+                git_refs(&target).map_err(fail)?,
+            );
+        }
         sides.push(Side {
             name,
             code: exit_code(&out.status),
             stdout: n.stream(&out.stdout),
             stderr: n.stream(&out.stderr),
-            files: n.tree().map_err(fail)?,
+            files,
         });
     }
     let rust = sides.pop().unwrap();

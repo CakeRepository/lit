@@ -641,7 +641,9 @@ def land(args):
     snapshot = receipt["snapshot"]
     repo = Repo(args.repo)
     base, final = snapshot["base"], receipt["final"]
-    if not receipt["tested"] or final != repo.out(
+    tested = set(receipt["tested"])
+    members = {p["number"] for p in snapshot["changes"]}
+    if not tested or not tested <= members or final != repo.out(
         "rev-parse", "refs/concurrent-merge/tested/" + args.receipt.parent.name
     ):
         raise ValueError("No matching tested batch ref")
@@ -657,6 +659,11 @@ def land(args):
     ref = "refs/heads/" + snapshot["branch"]
     repo.run("check-ref-format", ref)
     destination = "https://github.com/" + snapshot["repository"] + ".git"
+    if "LIT_PARITY_LAND_TARGET" in os.environ:
+        target = Path(os.environ["LIT_PARITY_LAND_TARGET"])
+        if os.environ.get("GIT_ALLOW_PROTOCOL") != "file" or not target.is_absolute() or not target.is_dir():
+            raise ValueError("Expected an isolated local landing target")
+        destination = str(target)
     publish(repo, destination, ref, base, final)
     print(final)
 
