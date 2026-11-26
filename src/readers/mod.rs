@@ -1,4 +1,5 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
+mod csharp;
 mod javascript;
 mod json_reader;
 mod markdown;
@@ -61,6 +62,7 @@ const READERS: &[(&[&str], Reader)] = &[
     ),
     (&[".md", ".markdown"], Reader::Text(markdown::outline)),
     (&[".json"], Reader::Text(json_reader::outline)),
+    (&[".cs"], Reader::Text(csharp::outline)),
     (&[".yaml", ".yml"], Reader::Text(yaml::outline)),
     (&[".py", ".pyi", ".pyw"], Reader::Encoded(python::outline)),
 ];

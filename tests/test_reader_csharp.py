@@ -292,7 +292,9 @@ def tree(source):
 
 class CSharpReaderTests(ReaderConformance, unittest.TestCase):
     PATH = "src/Orders.cs"
-    SAMPLES = SAMPLES
+    SAMPLES = (*SAMPLES,
+               "class @Ⅺ { int café; string S() => \"😀\"; }\n".encode(),
+               b"class Q { string S => $$\"\"\"text {{Get(\"x\"):fmt}} here\"\"\"; }\n")
     KEYS = (
         (0, ["using System", "using System.Collections.Generic", "using Microsoft.AspNetCore.Mvc", "namespace Shop.Api.Controllers"]),
         (
@@ -307,6 +309,7 @@ class CSharpReaderTests(ReaderConformance, unittest.TestCase):
         (4, ["using System", "record Person"]),
     )
     BROKEN = (
+        "class @² { int n; }\n".encode(),
         b'class A { string s = "open; }\n',
         b'class A { void F() { }\n',
         b'class A { void F() { } } }\n',
