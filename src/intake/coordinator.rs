@@ -315,6 +315,9 @@ impl Intake<'_> {
             self.finish(refs, lock, row, &m, remaining)?;
             return Ok(true);
         }
+        if let Some(progress) = self.direct(refs, lock, row, &m, &remaining)? {
+            return Ok(progress);
+        }
         let batch = match self.batch_pr(row) {
             Ok(v) => v,
             Err(Error::Hold(s)) if s.contains("(UNKNOWN)") => return Ok(false),

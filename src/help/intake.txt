@@ -1,4 +1,5 @@
 usage: concurrent-merge intake [-h] [--branch BRANCH] --context CONTEXT
+                               [--direct-context CONTEXT]
                                [--original-prs-only] [--max-batch N|auto]
                                repository
 
@@ -6,13 +7,17 @@ positional arguments:
   repository
 
 options:
-  -h, --help           show this help message and exit
+  -h, --help            show this help message and exit
   --branch BRANCH
-  --context CONTEXT    Required status a PR head must pass to be batched
-  --original-prs-only  Queue the original PRs one by one instead of a combined
-                       batch PR
-  --max-batch N|auto   Most ready PRs in one fresh batch; auto sizes it from
-                       the recent share of red PRs
+  --context CONTEXT     Required status a PR head must pass to be batched
+  --direct-context CONTEXT
+                        Full-suite status that lets a batch land on the branch
+                        itself when its PRs change different files; others go
+                        through the merge queue
+  --original-prs-only   Queue the original PRs one by one instead of a
+                        combined batch PR
+  --max-batch N|auto    Most ready PRs in one fresh batch; auto sizes it from
+                        the recent share of red PRs
 
 Then an action: ready N..., drain [--no-wait], tick [--label L], withdraw N
 HEAD, report N

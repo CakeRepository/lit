@@ -700,6 +700,12 @@ def intake_options(parser):
         "--context", required=True, help="Required status a PR head must pass to be batched"
     )
     parser.add_argument(
+        "--direct-context",
+        metavar="CONTEXT",
+        help="Full-suite status that lets a batch land on the branch itself when its PRs change "
+        "different files; others go through the merge queue",
+    )
+    parser.add_argument(
         "--original-prs-only",
         action="store_true",
         help="Queue the original PRs one by one instead of a combined batch PR",
@@ -1084,6 +1090,7 @@ def main():
             context=known.context,
             original_prs_only=known.original_prs_only,
             max_batch=known.max_batch,
+            direct_context=known.direct_context,
         )
         return 0
     args = p.parse_args()
