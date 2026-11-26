@@ -122,7 +122,15 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
         }
         let target = work.join(format!("{name}-landing.git"));
         let inputs = work.join(format!("{name}-inputs"));
-        if let Some(landing) = &landing {
+        let mut intake = None;
+        if o.args.first().is_some_and(|s| s == "intake")
+            && !o.args.iter().any(|s| matches!(s.as_str(), "--help" | "-h"))
+        {
+            intake = Some(
+                crate::parity_intake::Replay::start(&mut cmd, &o.source, &dir, &o.args, &o.epoch)
+                    .map_err(fail)?,
+            );
+        } else if let Some(landing) = &landing {
             landing.configure(&mut cmd, &dir, &target).map_err(fail)?;
         } else if let Some(proof) = &proof {
             proof.configure(&mut cmd, &target).map_err(fail)?;
@@ -162,6 +170,12 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
             ),
         };
         let mut files = n.tree().map_err(fail)?;
+        if let Some(replay) = intake {
+            files.insert(
+                "(intake API mutations)".into(),
+                crate::json::canonical(&replay.finish().map_err(fail)?),
+            );
+        }
         if inputs.exists() {
             n.visit(&inputs, "(external inputs)", &mut files)
                 .map_err(fail)?;
@@ -518,6 +532,9 @@ impl Normalizer<'_> {
         if info.is_dir() {
             if is_git_dir(path) {
                 files.insert(format!("{rel}/(refs)"), self.text(&git_refs(path)?));
+                if path.join("lit-state").is_dir() {
+                    self.visit(&path.join("lit-state"), &child("lit-state"), files)?;
+                }
                 return Ok(());
             }
             let mut entries: Vec<_> = fs::read_dir(path)

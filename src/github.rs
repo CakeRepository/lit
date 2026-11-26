@@ -77,10 +77,10 @@ impl Client {
         }
     }
 
-    fn request(&self, url: &str, data: Option<String>) -> Result<Value, String> {
+    fn request(&self, method: &str, url: &str, data: Option<String>) -> Result<Value, String> {
         let mut req = Request::builder()
             .uri(url)
-            .method(if data.is_some() { "POST" } else { "GET" })
+            .method(method)
             .header("User-Agent", "lit")
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28");
@@ -122,10 +122,55 @@ impl Client {
     }
 
     pub fn get(&self, path: &str) -> Result<Value, String> {
-        self.request(&format!("{}/{}", self.api, path), None)
+        self.request("GET", &format!("{}/{}", self.api, path), None)
+    }
+    pub fn artifact(&self, location: &str) -> Result<Vec<u8>, String> {
+        let base = format!("{}/", self.api);
+        let url = if location.starts_with(&base) {
+            location.to_owned()
+        } else if !location.contains("://") && !location.starts_with("//") {
+            format!("{base}{}", location.trim_start_matches('/'))
+        } else {
+            return Err("Unexpected GitHub artifact URL".into());
+        };
+        let mut req = self
+            .http
+            .get(&url)
+            .header("User-Agent", "lit")
+            .header("Accept", "application/vnd.github+json");
+        if let Some(token) = credential(&url) {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+        // Strip credentials on every redirect, including GitHub's signed storage URL.
+        let mut response = req
+            .config()
+            .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
+            .build()
+            .call()
+            .map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("GitHub artifact: {}", response.status()));
+        }
+        response
+            .body_mut()
+            .with_config()
+            .limit(256 * 1024 * 1024)
+            .read_to_vec()
+            .map_err(|e| e.to_string())
     }
     pub fn post(&self, path: &str, body: Value) -> Result<Value, String> {
-        self.request(&format!("{}/{}", self.api, path), Some(json::pretty(&body)))
+        self.request(
+            "POST",
+            &format!("{}/{}", self.api, path),
+            Some(json::pretty(&body)),
+        )
+    }
+    pub fn patch(&self, path: &str, body: Value) -> Result<Value, String> {
+        self.request(
+            "PATCH",
+            &format!("{}/{}", self.api, path),
+            Some(json::pretty(&body)),
+        )
     }
 
     pub fn pages(&self, path: &str) -> Result<Vec<Value>, String> {
@@ -147,7 +192,7 @@ impl Client {
 
     pub fn graphql(&self, query: &str, variables: Value) -> Result<Value, String> {
         let body = json::object([("query", query.into()), ("variables", variables)]);
-        let result = self.request(&self.graphql_url, Some(json::pretty(&body)))?;
+        let result = self.request("POST", &self.graphql_url, Some(json::pretty(&body)))?;
         if let Some(Value::Array(errors)) = result.get("errors") {
             if !errors.is_empty() {
                 return Err(errors

@@ -15,6 +15,7 @@ mod footprint;
 mod git;
 mod github;
 mod handback;
+mod intake;
 mod json;
 mod json_paths;
 mod land;
@@ -22,6 +23,7 @@ mod merge;
 mod merge_tree;
 mod parity;
 mod parity_footprint;
+mod parity_intake;
 mod parity_land;
 mod preview;
 mod proof;
@@ -48,6 +50,7 @@ type Native = fn(&[String]) -> i32;
 /// Python. A command joins this table once its parity cases match.
 const NATIVE: &[(&str, Native)] = &[
     ("run", run::command),
+    ("intake", intake::command),
     ("agree", agree::command),
     ("blame", reports::blame_command),
     ("score-bun", reports::score_command),

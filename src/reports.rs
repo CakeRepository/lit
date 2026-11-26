@@ -26,7 +26,7 @@ fn observed(unit: &Value, key: &str) -> Result<BTreeSet<String>> {
         .map(strings)
         .unwrap_or_else(|| Ok(BTreeSet::new()))
 }
-fn verdict(
+pub(crate) fn verdict(
     failed: BTreeMap<String, Value>,
     changes: &BTreeMap<String, Vec<String>>,
 ) -> Result<Value> {

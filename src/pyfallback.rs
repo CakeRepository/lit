@@ -308,6 +308,16 @@ if epoch and sys.argv[1:2] == ["cached-run"]:
     cache.cached_run = partial(cache.cached_run, clock=lambda: datetime.fromtimestamp(int(epoch), timezone.utc),
                                rng=lambda: 0.5)
 from concurrent_merge.cli import main
+if epoch and sys.argv[1:2] == ["intake"]:
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from concurrent_merge import intake, intake_audit
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromtimestamp(int(epoch), tz)
+    intake.datetime = intake_audit.datetime = Clock
+    intake.time = SimpleNamespace(sleep=lambda _: None)
 sys.exit(main())
 "#;
 

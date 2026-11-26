@@ -1,0 +1,7 @@
+fragment LitSource on PullRequest {
+ id number state isDraft isCrossRepository headRefOid headRefName
+ baseRefName mergeStateStatus reviewDecision isInMergeQueue mergeQueueEntry{position state headCommit{oid}} author{login}
+ reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage endCursor}}
+ headRepository{nameWithOwner} mergeCommit{oid} autoMergeRequest{enabledAt}
+ commits(last:1){nodes{commit{oid status{contexts{context state createdAt creator{login} targetUrl}}}}}
+ }
