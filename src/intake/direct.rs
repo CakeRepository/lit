@@ -7,8 +7,6 @@ use super::*;
 use crate::merge::path_changes;
 use guard::approved;
 
-/// How long lit waits for a member's full-suite status before it sends the batch to the queue.
-const PATIENCE: i64 = 90 * 60;
 /// A member's number with the files it changed, the files the target changed since its base,
 /// and the files where its head and the batch tip differ.
 pub(super) type Footprint = (u64, Vec<String>, Vec<String>, Vec<String>);
@@ -90,7 +88,6 @@ impl Intake<'_> {
         }
         let numbers: Vec<u64> = m.iter().map(|(n, _)| *n).collect();
         let sources = self.src.pull_many(&numbers)?;
-        let age = seconds(row.field("started")?.string()?, &now()?)?;
         for (n, h) in m {
             let pr = &sources.get(n).ok_or("Missing source PR")?.0;
             if !approved(pr)? {
@@ -104,11 +101,6 @@ impl Intake<'_> {
                 Some("SUCCESS") => {}
                 None => {
                     return self.queue_instead(lock, row, format!("#{n} has no {context} status"))
-                }
-                Some("PENDING" | "EXPECTED") if age < PATIENCE => {
-                    let wait = format!("waiting for #{n}'s {context} before landing directly");
-                    println!("Batch {}: {wait}", short(row)?);
-                    return Ok(Some(false));
                 }
                 Some(state) => {
                     return self.queue_instead(lock, row, format!("#{n}'s {context} is {state}"))

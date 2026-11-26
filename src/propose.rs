@@ -9,9 +9,9 @@ use std::path::Path;
 const PRIOR_QUERY: &str = r#"query($owner:String!,$name:String!,$base:String!,$head:String!){
   repository(owner:$owner,name:$name){pullRequests(baseRefName:$base,headRefName:$head,
     states:[OPEN,CLOSED,MERGED],first:100){nodes{number state headRefOid isCrossRepository url}}}}"#;
-const CREATE_QUERY: &str = r#"mutation($repo:ID!,$base:String!,$head:String!,$title:String!,$body:String!){
+const CREATE_QUERY: &str = r#"mutation($repo:ID!,$base:String!,$head:String!,$title:String!,$body:String!,$draft:Boolean!){
   createPullRequest(input:{repositoryId:$repo,baseRefName:$base,headRefName:$head,
-    title:$title,body:$body,draft:true}){pullRequest{url}}}"#;
+    title:$title,body:$body,draft:$draft}){pullRequest{url}}}"#;
 
 pub fn command(args: &[String]) -> i32 {
     if args
@@ -194,7 +194,7 @@ fn propose(arguments: &[String]) -> Result<String, String> {
         .optional("--title")
         .filter(|s| !s.is_empty())
         .unwrap_or(&default_title);
-    create(&client, repository, branch, head, title, &body)
+    create(&client, repository, branch, head, title, &body, true)
 }
 
 fn matching_group(
@@ -333,18 +333,19 @@ pub(crate) fn create(
     head: &str,
     title: &str,
     body: &str,
+    draft: bool,
 ) -> Result<String, String> {
-    let draft = object([
+    let payload = object([
         ("base", branch.into()),
         ("head", head.into()),
         ("title", title.into()),
         ("body", body.into()),
-        ("draft", Value::Bool(true)),
+        ("draft", Value::Bool(draft)),
     ]);
     if let Some(target) = std::env::var_os("LIT_PARITY_LAND_TARGET") {
         // The parity harness models the created PR beside the private Git ref.
         let path = Path::new(&target).join("lit-draft.json");
-        files::replace(&path, json::pretty(&draft).as_bytes()).map_err(|e| e.to_string())?;
+        files::replace(&path, json::pretty(&payload).as_bytes()).map_err(|e| e.to_string())?;
         return Ok(format!("https://github.com/{repository}/pull/parity"));
     }
     let api = std::env::var("LIT_GITHUB_API").unwrap_or_else(|_| "auto".into());
@@ -368,6 +369,7 @@ pub(crate) fn create(
                     ("head", head.into()),
                     ("title", title.into()),
                     ("body", body.into()),
+                    ("draft", Value::Bool(draft)),
                 ]),
             )?;
             Ok::<String, String>(
@@ -386,7 +388,7 @@ pub(crate) fn create(
         }
     }
     Ok(client
-        .post(&format!("repos/{repository}/pulls"), draft)?
+        .post(&format!("repos/{repository}/pulls"), payload)?
         .field("html_url")?
         .string()?
         .into())

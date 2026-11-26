@@ -456,7 +456,8 @@ class AgentInSnapshotTests(unittest.TestCase):
 
         def graphql(query, variables=None, raise_on_errors=True):
             if "createPullRequest" in query:
-                self.assertIn("draft:true", query.replace(" ", ""))
+                self.assertIn("draft:$draft", query.replace(" ", ""))
+                self.assertIs(variables["draft"], True)
                 bodies.append(variables["body"])
                 return dict(data=dict(createPullRequest=dict(pullRequest=dict(url="https://github.com/owner/repo/pull/9"))))
             if "pullRequests" in query:

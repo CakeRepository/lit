@@ -544,7 +544,7 @@ class BatchTests(unittest.TestCase):
             propose(args, lambda *_: snapshot)
             create = [c for c in gh.call_args_list if "createPullRequest" in c.args[0]]
             self.assertEqual(len(create), 1)
-            self.assertIn("draft:true", create[0].args[0].replace(" ", ""))
+            self.assertIs(create[0].args[1]["draft"], True)
         self.assertEqual(remote.out("rev-parse", "refs/heads/main"), self.base)
         self.assertEqual(remote.out("rev-parse", "refs/heads/topic/batch"), final)
         existing = dict(

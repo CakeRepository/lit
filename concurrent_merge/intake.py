@@ -15,7 +15,7 @@ from . import github
 from .blame import changed_paths, verdict
 from .inputs import verified_changes
 from .intake_audit import audit
-from .proposal import create_draft, prior_pulls
+from .proposal import create_pull, prior_pulls
 from .engine import Engine, Repo, write_json
 from .intake_guard import (
     Ineligible,
@@ -186,9 +186,6 @@ def batch_limit(max_batch, record):
     if max_batch == "auto":
         return group_size(record.get("red"))
     return max_batch
-
-
-DIRECT_PATIENCE = 90 * 60  # seconds to wait for a member's full-suite status
 
 
 def refusal(said):
@@ -437,12 +434,13 @@ class Intake:
             path = Path(directory) / "body.md"
             path.write_text(body + "\n", encoding="utf8")
             print(
-                create_draft(
+                create_pull(
                     self.repository,
                     self.branch,
                     name,
                     "lit batch for " + numbers[:180],
                     path,
+                    draft=False,
                 ),
                 flush=True,
             )
@@ -730,7 +728,6 @@ class Intake:
         except Ineligible:
             return None
         sources = pull_many(self.repository, [n for n, _ in members])
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(record["started"])).total_seconds()
         for number, head in members:
             pr = sources[number][0]
             if pr["reviewDecision"] not in (None, "APPROVED"):
@@ -741,10 +738,6 @@ class Intake:
                 continue
             if state is None:
                 return self.queue_instead(lock, record, f"#{number} has no {context} status")
-            if state in ("PENDING", "EXPECTED") and age < DIRECT_PATIENCE:
-                wait = f"waiting for #{number}'s {context} before landing directly"
-                print(f"Batch {short}: {wait}", flush=True)
-                return False
             return self.queue_instead(lock, record, f"#{number}'s {context} is {state}")
         names = lambda a, b: sorted(changed_paths(self.repo.path, a, b))
         footprints = []

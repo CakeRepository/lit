@@ -53,9 +53,10 @@ impl Intake<'_> {
             &name,
             &format!("lit batch for {}", &nums[..nums.len().min(180)]),
             &body,
+            false,
         )?;
         println!("{url}");
-        find()?.ok_or_else(|| "New draft is not visible yet".into())
+        find()?.ok_or_else(|| "New batch PR is not visible yet".into())
     }
     fn submit(
         &self,
