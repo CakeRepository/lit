@@ -1,5 +1,5 @@
 use super::*;
-use guard::{batch_name, manifest, pin};
+use guard::{batch_name, manifest, pin, rejected};
 
 fn compact(v: &Value, order: &[String]) -> String {
     match v {
@@ -18,7 +18,7 @@ fn compact(v: &Value, order: &[String]) -> String {
                 .map(|k| {
                     let inner = match k.as_str() {
                         "source_green_at" => green.clone(),
-                        "closing" => vec!["remove".into(), "pending".into()],
+                        "closing" => vec!["remove".into(), "pending".into(), "reject".into()],
                         "conflict_retry" => vec!["event".into(), "boundary".into()],
                         _ => vec![],
                     };
@@ -51,6 +51,7 @@ impl Intake<'_> {
                 &self.target,
                 &self.active,
                 "refs/heads/lit/ready/*",
+                "refs/heads/lit/rejected/*",
             ],
             None,
         )?;
@@ -186,6 +187,17 @@ impl Intake<'_> {
                 println!("Hold #{n}: {why}");
                 continue;
             }
+            let held = refs.get(&rejected(*n));
+            if held.map(String::as_str) == Some(head) {
+                println!(
+                    "#{n} failed checks alone at {}; waiting for a new push",
+                    &head[..head.len().min(12)]
+                );
+                continue;
+            }
+            if let Some(old) = held {
+                edits.push((rejected(*n), old.clone(), String::new()));
+            }
             admitted += 1;
             let r = pin(*n);
             if refs.get(&r).map(String::as_str) != Some(head) {
@@ -197,7 +209,12 @@ impl Intake<'_> {
             return Err(hold("None of the requested source revisions are ready"));
         }
         if !edits.is_empty() {
-            self.fetch(edits.iter().map(|(_, _, h)| h.as_str()))?;
+            self.fetch(
+                edits
+                    .iter()
+                    .map(|(_, _, h)| h.as_str())
+                    .filter(|h| !h.is_empty()),
+            )?;
             self.push(edits)?;
         }
         Ok(())
@@ -357,14 +374,23 @@ impl Intake<'_> {
         remove: &[Member],
         pending: Vec<Value>,
     ) -> Result<()> {
-        self.change_record(
-            lock,
-            &with(
-                row,
-                "closing",
-                object([("remove", rows(remove)), ("pending", Value::Array(pending))]),
-            )?,
-        )
+        self.close_rejecting(lock, row, remove, pending, &[])
+    }
+    /// Like `close_later`, and also records `reject` (sources proven red at these heads)
+    /// so the same push that drops their pins leaves a durable rejection.
+    pub(super) fn close_rejecting(
+        &self,
+        lock: &str,
+        row: &Value,
+        remove: &[Member],
+        pending: Vec<Value>,
+        reject: &[Member],
+    ) -> Result<()> {
+        let mut plan = object([("remove", rows(remove)), ("pending", Value::Array(pending))]);
+        if !reject.is_empty() {
+            plan = with(&plan, "reject", rows(reject))?;
+        }
+        self.change_record(lock, &with(row, "closing", plan)?)
     }
     pub(super) fn finish(
         &self,
@@ -374,11 +400,34 @@ impl Intake<'_> {
         remove: &[Member],
         pending: Vec<Value>,
     ) -> Result<()> {
+        self.finish_rejecting(refs, lock, record, remove, pending, &[])
+    }
+    pub(super) fn finish_rejecting(
+        &self,
+        refs: &Refs,
+        lock: &str,
+        record: &Value,
+        remove: &[Member],
+        pending: Vec<Value>,
+        reject: &[Member],
+    ) -> Result<()> {
         let mut edits: Vec<_> = remove
             .iter()
             .filter(|(n, h)| refs.get(&pin(*n)) == Some(h))
             .map(|(n, h)| (pin(*n), h.clone(), String::new()))
             .collect();
+        edits.extend(
+            reject
+                .iter()
+                .filter(|(n, h)| refs.get(&rejected(*n)) != Some(h))
+                .map(|(n, h)| {
+                    (
+                        rejected(*n),
+                        refs.get(&rejected(*n)).cloned().unwrap_or_default(),
+                        h.clone(),
+                    )
+                }),
+        );
         let red = record.get("red").filter(|v| v.truthy());
         let next = if !pending.is_empty()
             || (red.is_some() && self.limit == Limit::Auto && !self.originals)

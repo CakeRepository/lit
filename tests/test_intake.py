@@ -527,6 +527,98 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(sum(r["attempts"] for r in rows), 3)
 
 
+class RejectionTests(unittest.TestCase):
+    """A source proven red at one head stays out of batches until it is pushed again."""
+
+    HEAD, TIP = "a" * 40, "f" * 40
+
+    def advance(self, members, blame=None):
+        from contextlib import ExitStack
+
+        api = Intake("owner/repo", "main", "trusted", Mock())
+        module = Intake.__module__
+        record = dict(members=members, remaining=[], tip=self.TIP, started="2026-11-23T00:00:00+00:00")
+        pr = dict(
+            id="P", number=9, state="OPEN", headRefOid=self.TIP, baseRefName="main", isDraft=False,
+            isInMergeQueue=False, reviewDecision=None, mergeStateStatus="CLEAN",
+        )
+        removal = dict(id="r1", reason="failed_checks")
+        timeline = {"repository": {"pullRequest": {"timelineItems": {"nodes": [removal]}}}}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(api, "batch_pr", return_value=pr))
+            stack.enter_context(patch(module + ".verify_sources"))
+            stack.enter_context(patch(module + ".pull", return_value=(pr, None)))
+            stack.enter_context(patch(module + ".graphql", return_value=timeline))
+            stack.enter_context(patch(module + ".trusted_status", return_value={"state": "FAILURE"}))
+            close = stack.enter_context(patch.object(api, "plan_close"))
+            if blame:
+                stack.enter_context(patch.object(api, "blame", return_value=blame))
+            self.assertTrue(api.advance({api.target: "base"}, "lock", record))
+        return api, record, close
+
+    def test_single_member_failure_plans_a_rejection_that_finish_pushes_with_the_pin_drop(self):
+        member = [4, self.HEAD]
+        api, record, close = self.advance([member])
+        close.assert_called_once()
+        self.assertEqual(close.call_args.args[2:], ([member], []))
+        self.assertEqual(close.call_args.kwargs, dict(reject=[member]))
+        refs = {api.active: "lock", "refs/heads/lit/ready/4": self.HEAD}
+        with patch.object(api, "push") as push:
+            api.finish(refs, "lock", record, [member], [], [member])
+        push.assert_called_once_with(
+            [
+                ("refs/heads/lit/ready/4", self.HEAD, ""),
+                ("refs/heads/lit/rejected/4", "", self.HEAD),
+                (api.active, "lock", ""),
+            ]
+        )
+
+    def test_blame_ejection_rejects_only_the_ejected_member(self):
+        members = [[1, "b" * 40], [2, self.HEAD]]
+        _, _, close = self.advance(members, blame=([members[1]], [[members[0]]], "blame names #2"))
+        self.assertEqual(close.call_args.kwargs, dict(reject=[members[1]]))
+
+    def test_a_split_that_ejects_nobody_rejects_nothing(self):
+        members = [[1, "b" * 40], [2, self.HEAD]]
+        _, _, close = self.advance(members, blame=([], [[members[0]], [members[1]]], "halving"))
+        self.assertEqual(close.call_args.kwargs, {})
+
+    def register(self, refs, heads):
+        api = Intake("owner/repo", "main", "trusted", Mock())
+        module = Intake.__module__
+        prs = {n: (dict(headRefOid=head), None) for n, head in heads.items()}
+        out = []
+        with (
+            patch.object(api, "refs", return_value=refs),
+            patch(module + ".pull_many", return_value=prs),
+            patch(module + ".eligibility", return_value=None),
+            patch.object(api, "fetch_commits") as fetch,
+            patch.object(api, "push") as push,
+            patch("builtins.print", side_effect=lambda *a, **k: out.append(a[0])),
+        ):
+            api.register(list(heads))
+        return push, fetch, out
+
+    def test_register_skips_a_rejected_head_but_still_pins_healthy_prs(self):
+        refs = {"refs/heads/lit/rejected/1": self.HEAD}
+        push, _, out = self.register(refs, {1: self.HEAD, 2: "c" * 40})
+        push.assert_called_once_with([("refs/heads/lit/ready/2", "", "c" * 40)])
+        self.assertEqual(out, [f"#1 failed checks alone at {self.HEAD[:12]}; waiting for a new push"])
+
+    def test_register_with_only_rejected_heads_has_nothing_new_to_pin(self):
+        with self.assertRaises(Ineligible):
+            self.register({"refs/heads/lit/rejected/1": self.HEAD}, {1: self.HEAD})
+
+    def test_a_new_head_is_admitted_and_its_stale_rejection_is_deleted(self):
+        new = "d" * 40
+        push, fetch, out = self.register({"refs/heads/lit/rejected/1": self.HEAD}, {1: new})
+        push.assert_called_once_with(
+            [("refs/heads/lit/rejected/1", self.HEAD, ""), ("refs/heads/lit/ready/1", "", new)]
+        )
+        self.assertEqual(list(fetch.call_args.args[0]), [new])
+        self.assertEqual(out, [])
+
+
 class BatcherTests(unittest.TestCase):
     def test_tick_pins_labelled_prs_and_drains_without_waiting(self):
         intake = Intake("owner/repo", "main", "trusted", Mock())
