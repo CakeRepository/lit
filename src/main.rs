@@ -23,6 +23,7 @@ mod preview;
 mod propose;
 mod pyfallback;
 mod readers;
+mod reports;
 mod run;
 mod sha256;
 mod snapshot;
@@ -41,6 +42,8 @@ type Native = fn(&[String]) -> i32;
 const NATIVE: &[(&str, Native)] = &[
     ("run", run::command),
     ("agree", agree::command),
+    ("blame", reports::blame_command),
+    ("score-bun", reports::score_command),
     ("collect", collect::command),
     ("land", land::command),
     ("propose", propose::command),

@@ -1,0 +1,14 @@
+usage: concurrent-merge blame [-h] [--workdir WORKDIR] --change ID=BASE..HEAD
+                              [--out OUT]
+                              receipts [receipts ...]
+
+positional arguments:
+  receipts              cached-units receipts of the run
+
+options:
+  -h, --help            show this help message and exit
+  --workdir WORKDIR
+  --change ID=BASE..HEAD
+                        One change of the group and the commits that bound it
+                        (repeatable)
+  --out OUT

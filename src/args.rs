@@ -99,3 +99,16 @@ impl<'a> Args<'a> {
             .ok_or_else(|| format!("the following arguments are required: {key}"))
     }
 }
+
+pub const ROOT_USAGE: &str = "usage: concurrent-merge [-h]\n                        {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose}\n                        ...";
+
+pub fn error(name: &str, help: &str, message: String) -> String {
+    if message.starts_with("unrecognized argument") {
+        return format!(
+            "{ROOT_USAGE}\nconcurrent-merge: error: {}",
+            message.replace("unrecognized argument:", "unrecognized arguments:")
+        );
+    }
+    let usage = help.split("\n\n").next().unwrap();
+    format!("{usage}\nconcurrent-merge {name}: error: {message}")
+}

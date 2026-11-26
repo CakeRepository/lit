@@ -271,16 +271,8 @@ fn shadow(repo: &Repo, snapshot: &Path, args: &Args<'_>, directory: &Path) -> Re
     Ok(())
 }
 
-const ROOT_USAGE: &str = "usage: concurrent-merge [-h]\n                        {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose}\n                        ...";
 fn argument_error(message: String) -> String {
-    if message.starts_with("unrecognized argument") {
-        return format!(
-            "{ROOT_USAGE}\nconcurrent-merge: error: {}",
-            message.replace("unrecognized argument:", "unrecognized arguments:")
-        );
-    }
-    let usage = include_str!("help/run.txt").split("\n\n").next().unwrap();
-    format!("{usage}\nconcurrent-merge run: error: {message}")
+    crate::args::error("run", include_str!("help/run.txt"), message)
 }
 fn test_option(arg: &str) -> bool {
     let flag = arg.split('=').next().unwrap_or(arg);
