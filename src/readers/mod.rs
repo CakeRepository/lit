@@ -1,6 +1,7 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
 mod json_reader;
 mod markdown;
+pub(crate) mod structure;
 mod yaml;
 
 use std::fmt::Write;
