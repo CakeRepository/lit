@@ -103,11 +103,20 @@ def sign(proof, key):
     """Sign proof with ssh-keygen. key may be a public key whose private half
     is held by ssh-agent (a hardware or TPM key): lit never reads a private key."""
     sig = Path(str(proof) + ".sig")
-    sig.unlink(missing_ok=True)
-    subprocess.run(
-        ["ssh-keygen", "-q", "-Y", "sign", "-f", str(key), "-n", NAMESPACE, str(proof)],
-        check=True, stdin=subprocess.DEVNULL, capture_output=True,
-    )
+    with Path(proof).open("rb") as data:
+        result = subprocess.run(
+            ["ssh-keygen", "-q", "-Y", "sign", "-f", str(key), "-n", NAMESPACE],
+            stdin=data, capture_output=True,
+        )
+    if result.returncode:
+        raise ValueError(result.stderr.decode(errors="replace").strip())
+    with tempfile.NamedTemporaryFile(dir=sig.parent, delete=False) as staged:
+        try:
+            staged.write(result.stdout)
+            staged.close()
+            os.replace(staged.name, sig)
+        finally:
+            Path(staged.name).unlink(missing_ok=True)
     return sig
 
 
@@ -213,7 +222,7 @@ def push(proof, sig, remote, repo, *, prefix=REF_PREFIX):
     """Push the proof and its signature as one commit under prefix<commit>/<id>.
     The lease makes the push fail rather than replace an existing ref."""
     payload = json.loads(gzip.decompress(Path(proof).read_bytes()))
-    blobs = [git(repo, "hash-object", "-w", str(path)) for path in (proof, sig)]
+    blobs = [git(repo, "hash-object", "-w", str(Path(path).resolve())) for path in (proof, sig)]
     tree = git(repo, "mktree", data=(
         f"100644 blob {blobs[0]}\tproof.json.gz\n100644 blob {blobs[1]}\tproof.json.gz.sig\n"
     ).encode())
@@ -430,7 +439,18 @@ def signers_at(repo, rev, out):
 
 
 def main(argv):
+    # Match the rest of the CLI: report input and I/O errors without a traceback.
+    import sys
+    try:
+        return _main(argv)
+    except (OSError, ValueError, OverflowError, subprocess.CalledProcessError) as error:
+        print(error, file=sys.stderr)
+        return 2
+
+
+def _main(argv):
     import argparse
+    import math
 
     p = argparse.ArgumentParser(prog="concurrent-merge proof", description=__doc__.split("\n\n")[0])
     cmd = p.add_subparsers(dest="action", required=True)
@@ -501,6 +521,8 @@ def main(argv):
         print(push(args.proof, Path(str(args.proof) + ".sig"), args.remote, args.repo, prefix=args.prefix))
         return 0
     revoked = args.revoked.read_text(encoding="utf8").split() if args.revoked else ()
+    if not math.isfinite(args.max_age_hours) or abs(args.max_age_hours) >= 24e9:
+        raise ValueError("Invalid maximum proof age")
     max_age = timedelta(hours=args.max_age_hours)
     with tempfile.TemporaryDirectory(prefix="lit-signers-") as scratch:
         allowed = args.allowed_signers or signers_at(args.repo, args.signers_at, Path(scratch) / "allowed")

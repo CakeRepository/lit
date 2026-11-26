@@ -244,6 +244,9 @@ fn execute(argv: &[String]) -> Result<i32> {
                 .unwrap_or("72")
                 .parse::<f64>()
                 .map_err(|_| "Invalid maximum proof age")?;
+            if !age.is_finite() || age.abs() >= 24e9 {
+                return Err("Invalid maximum proof age".into());
+            }
             let policy = payload::Policy {
                 repo: args.required("--repository")?,
                 commits: args.all("--commit"),

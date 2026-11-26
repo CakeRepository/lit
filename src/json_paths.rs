@@ -106,15 +106,22 @@ pub fn render(value: &Value) -> String {
 
 /// The code points Python compares when sorting a JSON key, including lone surrogates.
 fn points(s: &str) -> impl Iterator<Item = u32> + '_ {
-    let mut chars = s.chars();
+    let mut chars = s.chars().peekable();
     std::iter::from_fn(move || {
         let c = chars.next()?;
         if c != MARK {
             return Some(c as u32);
         }
-        match chars.next() {
-            Some(MARK) | None => Some(MARK as u32),
-            Some(c) => Some(0xd800 + (c as u32 - 0xe000)),
+        match chars.peek().copied() {
+            Some(MARK) => {
+                chars.next();
+                Some(MARK as u32)
+            }
+            Some(c @ '\u{e000}'..='\u{e7ff}') => {
+                chars.next();
+                Some(0xd800 + (c as u32 - 0xe000))
+            }
+            _ => Some(MARK as u32),
         }
     })
 }
@@ -168,6 +175,22 @@ pub fn sorted(value: &Value, pretty: bool) -> String {
     }
     fn item(v: &Value, d: usize, pretty: bool, out: &mut String) {
         let nonempty = match v {
+            Value::Number(n) => {
+                if n.contains(['.', 'e', 'E']) {
+                    if let Ok(x) = n.parse::<f64>() {
+                        let repr = format!("{x:?}");
+                        if let Some((base, exp)) = repr.split_once('e') {
+                            let exponent: i32 = exp.parse().unwrap();
+                            write!(out, "{base}e{exponent:+03}").unwrap();
+                        } else {
+                            out.push_str(&repr);
+                        }
+                        return;
+                    }
+                }
+                out.push_str(if n == "-0" { "0" } else { n });
+                return;
+            }
             Value::String(s) => {
                 string(s, out);
                 return;
