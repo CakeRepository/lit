@@ -270,7 +270,9 @@ CLOSE = (b"if (t) t.status = Status.Closed;", b"if (t) t.status = Status.Closed,
 
 class TypeScriptReaderTests(ReaderConformance, unittest.TestCase):
     PATH = "src/tickets.ts"
-    SAMPLES = (TS, TS_TYPES, TS_STYLE, b"export const x = 1;\n")
+    SAMPLES = (TS, TS_TYPES, TS_STYLE, b"export const x = 1;\n",
+               "const Ⅺ = .125;\nfunction café() { return /😀+/u; }\n".encode(),
+               b"for await (const v of stream) /item/.test(v);\nconst after = 1;\n")
     KEYS = (
         (0, ["import @angular/core", "import ./repo", "enum Status", "interface Ticket", "type Filter",
              "function summarize", "function pending", "class TicketService"]),
