@@ -89,6 +89,23 @@ def run_receipts(repository, run_id, directory, patterns=RECEIPT_ARTIFACTS):
     return failed
 
 
+def queue_runs(rows, branch, number):
+    """Ids of the completed runs of batch #number's newest merge group, oldest first.
+
+    A batch that fails in the merge queue keeps its fast PR status, and the
+    run behind that status never ran the full suites, so the receipts of the
+    failing tests are only among the merge-group runs."""
+    prefix = f"gh-readonly-queue/{branch}/pr-{number}-"
+    done = [
+        r for r in rows
+        if str(r.get("head_branch") or "").startswith(prefix) and r.get("status") == "completed"
+    ]
+    if not done:
+        return []
+    newest = max(done, key=lambda r: (str(r.get("created_at") or ""), int(r["id"])))["head_sha"]
+    return [str(i) for i in sorted(int(r["id"]) for r in done if r.get("head_sha") == newest)]
+
+
 def member_changes(repo, record):
     """{source number: paths its own step of the batch chain changed}, or None if the chain is not one step per member."""
     rows = repo.out(
@@ -603,7 +620,7 @@ class Intake:
             members = record["members"]
             print(f"Batch #{number} left admission: {reason}", flush=True)
             if reason == "failed_checks" and len(members) > 1:
-                remove, pending, why = self.blame(record, trusted)
+                remove, pending, why = self.blame(number, record, trusted)
                 print(f"Batch #{number}: {why}", flush=True)
                 self.plan_close(
                     lock,
@@ -635,16 +652,27 @@ class Intake:
             f"batch checks {status or 'pending'}, GitHub merge state {pr['mergeStateStatus']}",
         )
 
-    def blame(self, record, trusted):
+    def blame(self, number, record, trusted):
         """Who leaves a failed batch, from what its failing test files read (see split_failed)."""
         members = record["members"]
         run = (trusted.get("targetUrl") or "").rsplit("/", 1)[-1]
         failed, changes = {}, None
         try:
             changes = member_changes(self.repo, record)
-            if run.isdigit():
+            try:
+                listing = github.rest(
+                    "GET",
+                    f"repos/{self.repository}/actions/runs",
+                    dict(event="merge_group", per_page=100),
+                )
+                runs = queue_runs((listing or {}).get("workflow_runs") or [], self.branch, number)
+            except (github.GitHubError, OSError, ValueError, KeyError, TypeError):
+                runs = []
+            if not runs and run.isdigit():
+                runs = [run]
+            for each in runs:
                 with tempfile.TemporaryDirectory(prefix="lit-receipts-") as directory:
-                    failed = run_receipts(self.repository, run, directory)
+                    failed.update(run_receipts(self.repository, each, directory))
         except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
             # Blame only narrows a split; whatever stops it, the batch is halved as before.
             print(f"Blame unavailable: {error!r}", flush=True)

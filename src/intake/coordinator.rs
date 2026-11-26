@@ -451,7 +451,7 @@ impl Intake<'_> {
                 .unwrap_or("failed_checks");
             println!("Batch #{n} left admission: {reason}");
             if reason == "failed_checks" && m.len() > 1 {
-                let (remove, pending, why) = self.blame(row, &m, trusted, remaining)?;
+                let (remove, pending, why) = self.blame(n, row, &m, trusted, remaining)?;
                 println!("Batch #{n}: {why}");
                 self.close_rejecting(
                     lock,

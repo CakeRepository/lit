@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from concurrent_merge.engine import Repo
 from concurrent_merge.github import GitHubError
-from concurrent_merge.intake import Intake, member_changes, run_receipts, split_failed
+from concurrent_merge.intake import Intake, member_changes, queue_runs, run_receipts, split_failed
 
 MEMBERS = [[1, "a"], [2, "b"], [3, "c"], [4, "d"]]
 CHANGES = {"1": {"web/a.ts"}, "2": {"web/b.ts"}, "3": {"psa/c.sql"}, "4": {"docs/d.md"}}
@@ -93,6 +93,20 @@ class ReceiptTests(unittest.TestCase):
         error = GitHubError("no artifact matches the given patterns")
         with tempfile.TemporaryDirectory() as d, patch("concurrent_merge.github.download_artifacts", side_effect=error):
             self.assertEqual(run_receipts("o/r", "42", d), {})
+
+
+class QueueRunTests(unittest.TestCase):
+    def test_receipts_come_from_the_newest_merge_group_of_the_batch(self):
+        rows = [
+            dict(id=7, head_branch="gh-readonly-queue/main/pr-12-aaa", head_sha="old", status="completed", created_at="2026-01-01T10:00:00Z"),
+            dict(id=9, head_branch="gh-readonly-queue/main/pr-12-bbb", head_sha="new", status="completed", created_at="2026-01-01T11:00:00Z"),
+            dict(id=8, head_branch="gh-readonly-queue/main/pr-12-bbb", head_sha="new", status="completed", created_at="2026-01-01T11:00:00Z"),
+            dict(id=10, head_branch="gh-readonly-queue/main/pr-12-bbb", head_sha="new", status="in_progress", created_at="2026-01-01T11:00:00Z"),
+            dict(id=11, head_branch="gh-readonly-queue/main/pr-120-ccc", head_sha="x", status="completed", created_at="2026-01-01T12:00:00Z"),
+            dict(id=12, head_branch="gh-readonly-queue/dev/pr-12-ddd", head_sha="y", status="completed", created_at="2026-01-01T12:00:00Z"),
+        ]
+        self.assertEqual(queue_runs(rows, "main", 12), ["8", "9"])
+        self.assertEqual(queue_runs(rows, "main", 13), [])
 
 
 class SingletonTests(unittest.TestCase):
