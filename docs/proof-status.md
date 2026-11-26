@@ -9,10 +9,10 @@ tested only on synthetic data so far. Update this page when a number changes.
 | lit combines concurrent PRs into the same tree they really produced | Proven | 100 merged FlowRMM PRs (#2773 to #2914), replayed in 133 windows of 2, 5, 10 and 25 consecutive PRs. Every window gave the tree main had after those PRs, none held a PR. 89 of the 100 PR heads lacked the PR merged just before them, so these were truly concurrent changes. |
 | Assembly is fast | Proven for assembly | 25 real PRs assembled in about 7 s, including Python start-up. This is lit's own work only, not CI. |
 | Independent PRs skip three-way merging | Proven | 21 of the 99 pairs went through the disjoint fast-import path, all with the right tree. |
-| Declaration-level merges resolve overlaps Git can't | Unproven | No window in this history needed one. Covered by unit tests only. |
+| Declaration-level merges resolve overlaps Git can't | Unproven on real PRs | No window in this history needed one. `tests/test_end_to_end.py` checks them end to end on synthetic PRs against a local stand-in for GitHub; it found a gap with renamed functions, fixed in #38. |
 | One queue run lands many PRs | Proven once | Batch #2912 landed #2908, #2909 and #2910 with one merge-group run instead of three. The other six batches (#2840, #2845, #2873, #2894, #2905, #2911) held one PR each. |
 | PRs land faster | Not yet | Green to main for batched PRs: median 70.0 min (9 PRs). PRs that went through GitHub's queue alone the same day: median 46.9 min (15 PRs). Not a clean comparison (different hours and queue depth), but there is no speed-up to claim. The two-minute goal is far off. |
-| A failing batch is split to find the PR that broke it | Unproven | No FlowRMM batch has failed yet. Covered by tests and simulations only. |
+| A failing batch is split to find the PR that broke it | Unproven on real PRs | No FlowRMM batch has failed yet. `tests/test_end_to_end.py` covers a PR that fails alone and one that fails only when combined, on synthetic PRs. |
 | `--max-batch auto` sizes batches from the red share | Unproven | No batch has been sized by it yet. |
 | Test records skip work that can't have changed | Partly | Merge-group runs on batches #2912 and #2894: the portal suite ran 34 of 1,182 files and reused 1,148 (97%), 84 s. The FlowPSA SQL suite ran 256 of 438 and 239 of 437 files (about 43% reused). Audits ran in each. |
 | Signed test results from other machines count as proof | Unproven | Built (proof pack/sign/take, audit book) but not used in FlowRMM: no signing machines are set up. |
