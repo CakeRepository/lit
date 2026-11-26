@@ -104,9 +104,9 @@ PRIOR_QUERY = """query($owner:String!,$name:String!,$base:String!,$head:String!)
   repository(owner:$owner,name:$name){pullRequests(baseRefName:$base,headRefName:$head,
     states:[OPEN,CLOSED,MERGED],first:100){nodes{number state headRefOid isCrossRepository url}}}}"""
 
-CREATE_QUERY = """mutation($repo:ID!,$base:String!,$head:String!,$title:String!,$body:String!){
+CREATE_QUERY = """mutation($repo:ID!,$base:String!,$head:String!,$title:String!,$body:String!,$draft:Boolean!){
   createPullRequest(input:{repositoryId:$repo,baseRefName:$base,headRefName:$head,
-    title:$title,body:$body,draft:true}){pullRequest{url}}}"""
+    title:$title,body:$body,draft:$draft}){pullRequest{url}}}"""
 
 
 def prior_pulls(repository, branch, head):
@@ -142,12 +142,12 @@ def prior_pulls(repository, branch, head):
     ]
 
 
-def create_draft(repository, branch, head, title, body_path):
+def create_pull(repository, branch, head, title, body_path, *, draft=True):
     api = graphql_allowed()
     body = Path(body_path).read_text(encoding="utf8")
     if target := os.environ.get("LIT_PARITY_LAND_TARGET"):
-        draft = dict(base=branch, head=head, title=title, body=body, draft=True)
-        (Path(target) / "lit-draft.json").write_text(json.dumps(draft), encoding="utf8")
+        payload = dict(base=branch, head=head, title=title, body=body, draft=draft)
+        (Path(target) / "lit-draft.json").write_text(json.dumps(payload), encoding="utf8")
         return f"https://github.com/{repository}/pull/parity"
     if api != "rest":
         try:
@@ -158,7 +158,7 @@ def create_draft(repository, branch, head, title, body_path):
             )["data"]["repository"]["id"]
             made = github.graphql(
                 CREATE_QUERY,
-                dict(repo=repo_id, base=branch, head=head, title=title, body=body),
+                dict(repo=repo_id, base=branch, head=head, title=title, body=body, draft=draft),
             )
             return made["data"]["createPullRequest"]["pullRequest"]["url"]
         except github.GitHubError:
@@ -168,7 +168,7 @@ def create_draft(repository, branch, head, title, body_path):
     created = github.rest(
         "POST",
         f"repos/{repository}/pulls",
-        body=dict(title=title, head=head, base=branch, draft=True, body=body),
+        body=dict(title=title, head=head, base=branch, draft=draft, body=body),
     )
     return created["html_url"]
 
@@ -237,7 +237,7 @@ def propose(args, read_queue):
                 destination,
                 final + ":" + ref,
             )
-        url = create_draft(
+        url = create_pull(
             repository, branch, head, args.title or f"lit batch for {numbers}", path
         )
     print(url)

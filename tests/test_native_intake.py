@@ -93,18 +93,29 @@ class IntakeCLI(unittest.TestCase):
     def test_tick_pins_both_prs_and_enqueues_only_the_combined_head(self):
         self.get("issues?state=open&labels=lit-ready&sort=created&direction=asc&per_page=100&page=1",
                  [dict(number=n, pull_request={}) for n, _ in self.members])
+        self.full_suite(1, state="PENDING")
         self.pulls([1, 2])
         self.pulls([77])
         self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
             dict(number=77, state="OPEN", headRefOid=self.tip, isCrossRepository=False, url="fixture")
         ]))))
+        prior = self.rules[-1]
+        prior["replies"] = [dict(data=dict(repository=dict(pullRequests=dict(nodes=[])))), prior.pop("reply")]
+        self.gql("repository(owner:$o,name:$n){id}", dict(repository=dict(id="repo-id")))
+        body = ("lit collected the following ready source revisions before native queue admission. "
+                "The protected merge-group workflow validates the combined change.\n\n"
+                + "".join(f"- #{n} at `{head}`\n" for n, head in self.members))
+        self.gql("draft:$draft", dict(createPullRequest=dict(pullRequest=dict(url="fixture"))),
+                 dict(repo="repo-id", base="main", head=self.branch, title="lit batch for #1, #2",
+                      body=body, draft=False))
         self.gql("REMOVED_FROM_MERGE_QUEUE_EVENT", dict(repository=dict(pullRequest=dict(timelineItems=dict(nodes=[])))))
         self.gql("mergeQueue(branch:", dict(repository=dict(mergeQueue=dict(entries=dict(nodes=[])))))
         self.gql("enqueuePullRequest", dict(enqueuePullRequest=dict(mergeQueueEntry=dict(position=1))),
                  dict(pr="pr77", head=self.tip))
-        side = self.parity("--max-batch", "auto", "tick")
+        side = self.parity("--max-batch", "auto", "--direct-context", "full", "tick")
         remote = side / "intake-remote.git"
         record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
+        self.assertEqual(record["direct"], "#1's full is PENDING")
         self.assertEqual(record["members"], self.members)
         self.assertEqual(record["tip"], self.tip)
         self.assertEqual(git(remote, "rev-parse", "refs/heads/" + self.branch), self.tip)
