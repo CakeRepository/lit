@@ -28,7 +28,7 @@ def matching_group(repo, receipt, live):
             continue
         head = group["head"]
         if repo.run("cat-file", "-e", head + "^{commit}", check=False).returncode:
-            destination = "https://github.com/" + live["repository"] + ".git"
+            destination = github.git_destination(live["repository"])
             if repo.run(
                 "fetch", "--no-tags", destination, head, check=False
             ).returncode:
@@ -145,6 +145,10 @@ def prior_pulls(repository, branch, head):
 def create_draft(repository, branch, head, title, body_path):
     api = graphql_allowed()
     body = Path(body_path).read_text(encoding="utf8")
+    if target := os.environ.get("LIT_PARITY_LAND_TARGET"):
+        draft = dict(base=branch, head=head, title=title, body=body, draft=True)
+        (Path(target) / "lit-draft.json").write_text(json.dumps(draft), encoding="utf8")
+        return f"https://github.com/{repository}/pull/parity"
     if api != "rest":
         try:
             owner, name = repository.split("/")
@@ -184,7 +188,7 @@ def propose(args, read_queue):
         live = read_queue(repository, branch, selection)
     else:
         live = read_queue(repository, branch)
-    destination = "https://github.com/" + repository + ".git"
+    destination = github.git_destination(repository)
     if live["base"] != snapshot["base"]:
         repo.run("fetch", "--no-tags", destination, "refs/heads/" + branch)
     remaining, included, tree = proposal_members(

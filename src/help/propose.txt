@@ -1,0 +1,13 @@
+usage: concurrent-merge propose [-h] --repo REPO --head HEAD [--title TITLE]
+                                [--notes NOTES]
+                                receipt
+
+positional arguments:
+  receipt
+
+options:
+  -h, --help     show this help message and exit
+  --repo REPO
+  --head HEAD    New topic branch for this batch
+  --title TITLE
+  --notes NOTES  Additional Markdown to include in the PR description

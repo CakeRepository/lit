@@ -45,6 +45,7 @@ class FakeGitHub:
         self.pulls = {}  # number -> dict(author, body, draft, labels, association)
         self.calls = []
         self.graphql = None
+        self.drafts = {}
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -53,6 +54,12 @@ class FakeGitHub:
 
             def do_POST(self):
                 fake.calls.append(("POST", self.path))
+                if self.path == f"/repos/{fake.repository}/pulls":
+                    row = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    row["html_url"] = f"https://github.com/{fake.repository}/pull/100"
+                    fake.drafts[row["head"]] = row
+                    self._send(201, row)
+                    return
                 if self.path == "/graphql" and fake.graphql:
                     request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                     self._send(200, fake.graphql(request["query"], request["variables"]))
@@ -98,6 +105,14 @@ class FakeGitHub:
                 return 404, dict(message="Not Found")
             return 200, dict(object=dict(type="commit", sha=sha))
         if rest == "pulls":
+            if "head" in query:
+                head = query["head"][0].split(":", 1)[1]
+                draft = self.drafts.get(head)
+                if not draft:
+                    return 200, []
+                return 200, [dict(number=100, state="open", html_url=draft["html_url"],
+                                  head=dict(ref=head, sha=self.ref("refs/heads/" + head),
+                                            repo=dict(full_name=self.repository)))]
             if int(query.get("page", ["1"])[0]) > 1:
                 return 200, []
             base = query.get("base", ["main"])[0]
