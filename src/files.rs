@@ -33,10 +33,38 @@ pub fn replace(path: &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 pub fn read(path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| match e.kind() {
+    fs::read(path).map_err(|e| error(path, e))
+}
+
+pub fn error(path: &Path, e: io::Error) -> String {
+    match e.kind() {
         io::ErrorKind::NotFound => {
-            format!("[Errno 2] No such file or directory: '{}'", path.display())
+            let name = path.to_string_lossy();
+            let quote = if name.contains('\'') && !name.contains('"') {
+                '"'
+            } else {
+                '\''
+            };
+            let mut shown = String::new();
+            for c in name.chars() {
+                match c {
+                    '\\' => shown.push_str("\\\\"),
+                    '\r' => shown.push_str("\\r"),
+                    '\n' => shown.push_str("\\n"),
+                    '\t' => shown.push_str("\\t"),
+                    c if c == quote => {
+                        shown.push('\\');
+                        shown.push(c);
+                    }
+                    c if c.is_control() => {
+                        use std::fmt::Write;
+                        write!(shown, "\\x{:02x}", c as u32).unwrap();
+                    }
+                    c => shown.push(c),
+                }
+            }
+            format!("[Errno 2] No such file or directory: {quote}{shown}{quote}")
         }
         _ => format!("{}: {e}", path.display()),
-    })
+    }
 }

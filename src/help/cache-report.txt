@@ -1,0 +1,6 @@
+usage: concurrent-merge cache-report [-h] --store STORE [--job JOB]
+
+options:
+  -h, --help     show this help message and exit
+  --store STORE
+  --job JOB

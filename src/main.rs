@@ -7,6 +7,7 @@
 mod agree;
 mod args;
 mod assembly;
+mod cache_report;
 mod changes;
 mod collect;
 mod files;
@@ -27,6 +28,7 @@ mod reports;
 mod run;
 mod sha256;
 mod snapshot;
+mod store;
 mod sys;
 
 use std::process::ExitCode;
@@ -44,6 +46,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("agree", agree::command),
     ("blame", reports::blame_command),
     ("score-bun", reports::score_command),
+    ("cache-report", cache_report::command),
     ("collect", collect::command),
     ("land", land::command),
     ("propose", propose::command),
