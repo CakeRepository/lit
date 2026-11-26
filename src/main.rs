@@ -6,6 +6,7 @@
 
 mod agree;
 mod args;
+mod changes;
 mod collect;
 mod files;
 mod git;
@@ -15,6 +16,7 @@ mod json;
 mod land;
 mod parity;
 mod parity_land;
+mod preview;
 mod propose;
 mod pyfallback;
 mod sha256;
@@ -36,6 +38,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("collect", collect::command),
     ("land", land::command),
     ("propose", propose::command),
+    ("preview", preview::command),
 ];
 
 fn native(name: &str) -> Option<Native> {

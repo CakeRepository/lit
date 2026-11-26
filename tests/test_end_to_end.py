@@ -346,6 +346,47 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(git(s.root / "batch.git", "rev-parse", "refs/concurrent-merge/inputs/" + oid), oid)
 
     @unittest.skipUnless(os.environ.get("LIT_BIN"), "lit parity is part of the binary")
+    def test_preview_matches_the_queue_anchor_and_refuses_a_changed_source(self):
+        s = self.s
+        git(s.root, "init", "-q", "--bare", "preview.git")
+        predecessor = s.heads[1]
+        tree = git(s.gh.remote, "rev-parse", predecessor + "^{tree}")
+        reads = 0
+        move_source = False
+
+        def graphql(query, variables):
+            nonlocal reads
+            if "mergeQueue(" in query:
+                entry = dict(state="AWAITING_CHECKS", headCommit=dict(oid=predecessor, tree=dict(oid=tree)),
+                             pullRequest=dict(number=1, headRefOid=predecessor, author=dict(login="alice"),
+                                              isDraft=False, state="OPEN", baseRefName="main"))
+                queue = dict(entries=dict(nodes=[entry], pageInfo=dict(hasNextPage=False)))
+                return dict(data=dict(repository=dict(ref=dict(target=dict(oid=s.base)), mergeQueue=queue)))
+            reads += 1
+            found = {}
+            for n in (3, 6):
+                oid = s.base if move_source and reads % 2 == 0 else s.heads[n]
+                found[f"p{n}"] = dict(number=n, headRefOid=oid, author=dict(login=f"agent{n}"),
+                                      state="OPEN", baseRefName="main", isInMergeQueue=False,
+                                      isCrossRepository=False, headRepository=dict(nameWithOwner=s.gh.repository),
+                                      reviewThreads=dict(nodes=[], pageInfo=dict(hasNextPage=False)))
+                found[f"r{n}"] = None
+            return dict(data=dict(repository=found))
+
+        s.gh.graphql = graphql
+        args = ["preview", s.gh.repository, "6", "3", "--repo", "preview.git", "--out", "prediction.json"]
+        self.assertIn("matches between Python and Rust (exit 0)", s.lit("parity", *args).stdout)
+        move_source = True
+        self.assertIn("matches between Python and Rust (exit 2)", s.lit("parity", *args).stdout)
+        move_source = False
+        s.env["LIT_PYTHON"] = str(s.root / "no-python")
+        prediction = json.loads(s.lit(*args).stdout)
+        self.assertEqual(prediction["anchor"], predecessor)
+        self.assertEqual(prediction["main"], s.base)
+        self.assertNotEqual(prediction["from_main"]["tree"], prediction["from_queue"]["tree"])
+        self.assertEqual(s.remote_main(), s.base)
+
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "lit parity is part of the binary")
     def test_parity_of_collect_and_run(self):
         """The commands this scenario drives give the same result run twice from the
         same inputs, and, once they move to Rust, the same result in Rust as in Python."""
