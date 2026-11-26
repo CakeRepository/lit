@@ -47,13 +47,15 @@ runs:
       run: |
         set -uo pipefail
         command -v strace >/dev/null || { echo "::warning::strace is not installed; running without lit"; cd "$LIT_WORKDIR" && exec bash -c "$LIT_RUN"; }
+        # The guard keeps lit from leaving anything in the runner's actions folder: a container
+        # job runs as root, and one root-owned file there stops the runner from cleaning that
+        # folder, so every later job on it fails.
+        source "$GITHUB_ACTION_PATH/../lib/guard.sh"
         receipt="$(mktemp)"
         # shellcheck disable=SC2086
         # Import lit from the action checkout without changing the job's own PYTHONPATH.
         # GITHUB_ACTION_PATH, not github.action_path: in a container job only the env var
-        # gives the path as the container sees it. -B writes no __pycache__ into the action's
-        # checkout: a container job runs as root, and root-owned files there stop the runner
-        # from cleaning its actions folder before the next job.
+        # gives the path as the container sees it.
         python3 -B -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from concurrent_merge.cli import main; sys.exit(main())' \
           "$GITHUB_ACTION_PATH/../.." cached-run \
           --store "$LIT_STORE" --job "$LIT_JOB" --workdir "$LIT_WORKDIR" \
