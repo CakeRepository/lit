@@ -43,6 +43,12 @@ pub fn read(path: &Path) -> Result<Value> {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Value> {
+    json::parse(&escaped(bytes)?)
+}
+pub fn ordered_object(path: &Path) -> Result<Vec<(String, Value)>> {
+    json::ordered_object(&escaped(&files::read(path)?)?)
+}
+fn escaped(bytes: &[u8]) -> Result<String> {
     let mut text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
     let mut escaped = String::new();
     while !text.is_empty() {
@@ -77,7 +83,7 @@ pub fn parse(bytes: &[u8]) -> Result<Value> {
             text = chars.as_str();
         }
     }
-    json::parse(&escaped)
+    Ok(escaped)
 }
 pub fn render(value: &Value) -> String {
     use std::fmt::Write;

@@ -19,6 +19,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
+static EPOCH: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+pub fn set_epoch() {
+    if let Ok(s) = std::env::var("SOURCE_DATE_EPOCH") {
+        if let Ok(n) = s.parse() {
+            let _ = EPOCH.set(n);
+        }
+    }
+}
+pub fn epoch() -> Option<i64> {
+    EPOCH.get().copied()
+}
 
 pub struct Side {
     pub name: &'static str,
@@ -98,6 +109,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
     } else {
         None
     };
+    let footprint = crate::parity_footprint::Inputs::prepare(&o.source, &o.args).map_err(fail)?;
     let mut sides = Vec::new();
     for name in ["python", "rust"] {
         let dir = work.join(name);
@@ -109,6 +121,7 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
             cmd.arg(format!("--internal-parity-{name}"));
         }
         let target = work.join(format!("{name}-landing.git"));
+        let inputs = work.join(format!("{name}-inputs"));
         if let Some(landing) = &landing {
             landing.configure(&mut cmd, &dir, &target).map_err(fail)?;
         } else if let Some(proof) = &proof {
@@ -127,6 +140,8 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
             cmd.env("LIT_PARITY_BOOK_DATE", &date)
                 .env("GIT_AUTHOR_DATE", &date)
                 .env("GIT_COMMITTER_DATE", &date);
+        } else if let Some(footprint) = &footprint {
+            cmd.args(footprint.stage(&inputs).map_err(fail)?);
         } else {
             cmd.args(&o.args);
         }
@@ -143,6 +158,10 @@ pub fn run(o: &Options) -> Result<Report, (String, Option<PathBuf>)> {
             ignore: &o.ignore,
         };
         let mut files = n.tree().map_err(fail)?;
+        if inputs.exists() {
+            n.visit(&inputs, "(external inputs)", &mut files)
+                .map_err(fail)?;
+        }
         if landing.is_some() || proof.as_ref().is_some_and(|p| p.redirected()) {
             let draft = target.join("lit-draft.json");
             if draft.exists() {
@@ -509,13 +528,59 @@ impl Normalizer<'_> {
             };
             if rel.ends_with(".json") {
                 if let Ok(v) = paths::parse(text.as_bytes()) {
+                    let v = if path.file_name().is_some_and(|s| s == "digests.json") {
+                        self.digest_cache(v)
+                    } else {
+                        v
+                    };
                     files.insert(rel.to_string(), paths::render(&self.json(v, "")));
+                    return Ok(());
+                }
+            }
+            if rel.ends_with(".jsonl") {
+                let rows: Result<Vec<_>, _> = text
+                    .lines()
+                    .map(|line| paths::parse(line.as_bytes()))
+                    .collect();
+                if let Ok(rows) = rows {
+                    files.insert(
+                        rel.to_owned(),
+                        paths::render(&self.json(Value::Array(rows), "")),
+                    );
                     return Ok(());
                 }
             }
             files.insert(rel.to_string(), self.text(text));
         }
         Ok(())
+    }
+
+    fn digest_cache(&self, v: Value) -> Value {
+        let Value::Object(entries) = v else { return v };
+        // Fresh copies have distinct inode and change-time values. Keep every
+        // path and digest, including repeated versions, when comparing them.
+        let mut normalized = BTreeMap::<String, Vec<Value>>::new();
+        for (key, hash) in entries {
+            let parts: Vec<_> = key.split('\0').collect();
+            let name = if parts.len() == 6
+                && parts[1..].iter().all(|s| s.parse::<i128>().is_ok())
+                && Path::new(parts[0]).starts_with(self.dir)
+            {
+                self.text(parts[0])
+            } else {
+                key
+            };
+            normalized.entry(name).or_default().push(hash);
+        }
+        Value::Object(
+            normalized
+                .into_iter()
+                .map(|(k, mut values)| {
+                    values.sort_by_cached_key(paths::render);
+                    (k, Value::Array(values))
+                })
+                .collect(),
+        )
     }
 }
 

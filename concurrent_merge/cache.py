@@ -87,6 +87,7 @@ def cached_run(
     limit=50,
     keep=200,
     rng=random.random,
+    clock=None,
 ):
     if mode not in MODES:
         raise ValueError("mode is shadow or enforce")
@@ -94,7 +95,7 @@ def cached_run(
     repo = Repo(workdir)
     commit = repo.out("rev-parse", "HEAD")
     directory = job_dir(store, job)
-    started = datetime.now(timezone.utc)
+    started = clock() if clock is not None else datetime.now(timezone.utc)
     digests = Path(store) / "digests.json"
     try:
         footprint.DIGESTS.update(json.loads(digests.read_text(encoding="utf8")))

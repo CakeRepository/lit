@@ -1,5 +1,7 @@
 //! Predict reuse from recorded filesystem observations of a job or its units.
+pub(crate) mod cache;
 mod compare;
+mod digests;
 mod events;
 mod glob;
 mod record;

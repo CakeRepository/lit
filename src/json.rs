@@ -94,9 +94,14 @@ pub fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
 }
 
 pub fn parse(text: &str) -> Result<Value, String> {
+    parse_impl(text, None)
+}
+
+fn parse_impl(text: &str, keys: Option<&mut Vec<String>>) -> Result<Value, String> {
     let mut p = Parser {
         s: text.as_bytes(),
         i: 0,
+        keys,
     };
     p.ws();
     let v = p.value(0)?;
@@ -107,9 +112,24 @@ pub fn parse(text: &str) -> Result<Value, String> {
     Ok(v)
 }
 
+pub fn ordered_object(text: &str) -> Result<Vec<(String, Value)>, String> {
+    let mut keys = Vec::new();
+    let Value::Object(mut map) = parse_impl(text, Some(&mut keys))? else {
+        return Err("Expected a JSON object".into());
+    };
+    Ok(keys
+        .into_iter()
+        .map(|key| {
+            let value = map.remove(&key).unwrap();
+            (key, value)
+        })
+        .collect())
+}
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    keys: Option<&'a mut Vec<String>>,
 }
 
 impl Parser<'_> {
@@ -157,6 +177,13 @@ impl Parser<'_> {
                     }
                     self.ws();
                     let v = self.value(depth + 1)?;
+                    if depth == 0 {
+                        if let Some(order) = &mut self.keys {
+                            if !map.contains_key(&key) {
+                                order.push(key.clone());
+                            }
+                        }
+                    }
                     map.insert(key, v);
                     self.ws();
                     if self.eat(",") {

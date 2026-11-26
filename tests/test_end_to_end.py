@@ -633,6 +633,54 @@ class FootprintSelectionCLI(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("strace") and not traced(), "syscall recording needs an available tracer")
 class FootprintRecordingCLI(unittest.TestCase):
+    def test_job_cache_shadow_enforce_audit_and_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = Path(tmp)
+            root = outer / "fixtures"
+            repo = root / "repo"
+            repo.mkdir(parents=True)
+            git(repo, "init", "-q", "-b", "main")
+            (repo / "input").write_text("ok")
+            (repo / "ci.sh").write_text(
+                'cat input; printf executed > ran; test -z "$ZZ_LIT_BREAK" || exit 9\n')
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "cacheable job")
+            marker = repo / "ran"
+            store = outer / "persistent store"
+            def run(mode, rate="0", broken=False, code=0):
+                argv = ["cached-run", "--workdir", str(repo), "--store", str(store), "--job", "suite",
+                        "--audit-rate", rate, "--mode", mode, "--ignore-env", "*", "--log", "ci.log",
+                        "--receipt", "receipt.json", "--test", "sh", "ci.sh"]
+                env = {"ZZ_LIT_BREAK": "1" if broken else "", "LC_ALL": "C"}
+                if os.environ.get("LIT_BIN"):
+                    ledger = store / "suite/ledger.jsonl"
+                    before = ledger.read_bytes() if ledger.exists() else None
+                    pair = lit(root, env, "parity", *argv)
+                    self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+                    self.assertIn(f"(exit {code})", pair.stdout)
+                    self.assertEqual(ledger.read_bytes() if ledger.exists() else None, before)
+                env["LIT_PYTHON"] = str(outer / "unavailable")
+                proc = lit(root, env, *argv)
+                self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+                return proc, json.loads((root / "receipt.json").read_text())
+            _, first = run("shadow")
+            self.assertEqual((first["decision"], first["compared"]), ("ran", 0))
+            _, shadow = run("shadow")
+            self.assertTrue(shadow["predicted_reuse"] and shadow["sound"])
+            marker.unlink()
+            _, reused = run("enforce")
+            self.assertEqual(reused["decision"], "reused")
+            self.assertFalse(marker.exists())
+            _, audit = run("enforce", rate="1", broken=True, code=9)
+            self.assertEqual(audit["decision"], "audited")
+            self.assertFalse(audit["sound"])
+            self.assertTrue(marker.exists())
+            (repo / "input").write_text("modified")
+            proc, _ = run("enforce", broken=True, code=9)
+            self.assertIn("running the job without a footprint", proc.stderr)
+            ledger = [json.loads(s) for s in (store / "suite/ledger.jsonl").read_text().splitlines()]
+            self.assertEqual([v["decision"] for v in ledger], ["ran", "ran", "reused", "audited"])
+
     def test_real_processes_create_compatible_job_and_unit_records(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,16 +1,7 @@
 use super::Result;
-use crate::{
-    files,
-    git::Repo,
-    json::Value,
-    json_paths as paths,
-    merge_tree::os,
-    sha256::{self, Sha256},
-};
+use crate::{files, git::Repo, json::Value, json_paths as paths, merge_tree::os, sha256};
 use std::{
     collections::BTreeMap,
-    fs,
-    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -134,30 +125,7 @@ impl Workspace {
 pub fn path(s: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(os(&paths::bytes(s)?)?))
 }
-pub fn digest(path: &Path) -> String {
-    let Ok(meta) = fs::metadata(path) else {
-        return "absent".into();
-    };
-    if meta.is_dir() {
-        return "dir".into();
-    }
-    if !meta.is_file() {
-        return "other".into();
-    }
-    let mut hasher = Sha256::new();
-    let Ok(mut file) = fs::File::open(path) else {
-        return "unreadable".into();
-    };
-    let mut buf = vec![0; 1 << 16];
-    loop {
-        match file.read(&mut buf) {
-            Ok(0) => return hasher.hex(),
-            Ok(n) => hasher.update(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => return "unreadable".into(),
-        }
-    }
-}
+pub use super::digests::file as digest;
 pub fn save(path: &Path, v: &Value) -> Result<()> {
     files::replace(path, format!("{}\n", paths::sorted(v, true)).as_bytes())
         .map_err(|e| files::error(path, e))

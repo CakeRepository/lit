@@ -1,0 +1,55 @@
+usage: concurrent-merge cached-units [-h] --store STORE --job JOB
+                                     [--workdir WORKDIR] [--cwd CWD] --each
+                                     TEMPLATE [--batch TEMPLATE]
+                                     [--units-file UNITS_FILE]
+                                     [--discover GLOB] [--strip STRIP]
+                                     [--proof-store PROOF_STORE]
+                                     [--audit-book AUDIT_BOOK] [--no-host]
+                                     [--mode {shadow,enforce,plan}]
+                                     [--audit-rate AUDIT_RATE]
+                                     [--allow-network]
+                                     [--listings {exact,names}]
+                                     [--ignore-env PATTERN] [--strict-env]
+                                     [--log LOG] [--receipt RECEIPT]
+                                     [--list LIST] [--shard I/N]
+                                     [--pin-file PIN_FILE] [--symbols PATTERN]
+                                     [--scratch DIR]
+
+options:
+  -h, --help            show this help message and exit
+  --store STORE
+  --job JOB
+  --workdir WORKDIR
+  --cwd CWD             Directory in the checkout to run each file in
+  --each TEMPLATE       Command for one file, with {} for its name
+  --batch TEMPLATE      In enforce mode, run the files that must run as one
+                        untraced command, where the part with {} repeats per
+                        file; only if it fails, run them one by one traced
+  --units-file UNITS_FILE
+  --discover GLOB
+  --strip STRIP
+  --proof-store PROOF_STORE
+                        Another store whose records also count, such as a pull
+                        request's own
+  --audit-book AUDIT_BOOK
+                        Signers' audit record: rerun proof files at each
+                        signer's share and record the result
+  --no-host             Do not compare files outside the checkout
+  --mode {shadow,enforce,plan}
+  --audit-rate AUDIT_RATE
+  --allow-network
+  --listings {exact,names}
+  --ignore-env PATTERN
+  --strict-env
+  --log LOG
+  --receipt RECEIPT
+  --list LIST           Write the files that had to run here
+  --shard I/N           Run only shard I of N of the files that must run,
+                        balanced by recorded seconds
+  --pin-file PIN_FILE   Unit names, one per line, that always run on shard 1
+  --symbols PATTERN     Keep per-function records for JS/TS files matching
+                        PATTERN (repeatable); put {lcov} in --each where bun's
+                        coverage arguments go
+  --scratch DIR         Untracked directory (repository path) where tests keep
+                        runtime data; nothing read or written there counts as
+                        an input (repeatable)
