@@ -9,6 +9,7 @@ const PATH_FLAGS: &[&str] = &[
     "--store",
     "--repo",
     "--workdir",
+    "--tests-dll",
     "--log",
     "--out",
     "--receipt",
@@ -39,6 +40,7 @@ impl Inputs {
         let help = match argv.first().map(String::as_str) {
             Some("cached-run") => include_str!("help/cached-run.txt"),
             Some("cached-units") => include_str!("help/cached-units.txt"),
+            Some("dotnet-units") => include_str!("help/dotnet-units.txt"),
             Some("trace") => include_str!("help/trace.txt"),
             Some("trace-units") => include_str!("help/trace-units.txt"),
             Some("reuse") => include_str!("help/reuse.txt"),
@@ -88,7 +90,14 @@ impl Inputs {
                 if val != "/dev/null" && !(cfg!(windows) && val.eq_ignore_ascii_case("NUL")) {
                     let real = resolved(&root.join(val))?;
                     if !real.starts_with(&root) {
-                        outside.push(real.clone());
+                        // The program map reads sibling assemblies and the dependency manifest.
+                        outside.push(if key == Some("--tests-dll") {
+                            real.parent()
+                                .ok_or("Missing test output folder")?
+                                .to_owned()
+                        } else {
+                            real.clone()
+                        });
                     }
                     edits.insert(i, (inline.map(|_| flag.into()), real));
                 }

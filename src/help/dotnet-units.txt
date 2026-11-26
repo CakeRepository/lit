@@ -1,0 +1,25 @@
+usage: concurrent-merge dotnet-units [-h] --store STORE --job JOB
+                                     [--workdir WORKDIR] --tests-dll TESTS_DLL
+                                     --run TEMPLATE
+                                     [--mode {enforce,refresh,sweep,plan}]
+                                     [--jobs JOBS] [--audit-rate AUDIT_RATE]
+                                     [--log LOG] [--receipt RECEIPT]
+                                     [--list LIST]
+
+options:
+  -h, --help            show this help message and exit
+  --store STORE
+  --job JOB
+  --workdir WORKDIR
+  --tests-dll TESTS_DLL
+                        The built test assembly; its folder holds the
+                        project's own assemblies
+  --run TEMPLATE        The dotnet test command (with --no-build), with
+                        {filter} where lit puts --filter and the classes to
+                        run
+  --mode {enforce,refresh,sweep,plan}
+  --jobs JOBS           classes recorded at once (refresh, sweep)
+  --audit-rate AUDIT_RATE
+  --log LOG
+  --receipt RECEIPT
+  --list LIST           Write the classes that had to run here

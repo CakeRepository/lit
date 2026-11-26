@@ -45,6 +45,10 @@ jobs:
         run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B tests/native_readers.py
       - name: Native batch assembly
         run: LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_engine.py
+      - name: Native .NET test-class records and parity
+        run: |
+          test "$(dotnet --version | cut -d. -f1)" -ge 10
+          LIT_BIN="$RUNNER_TEMP/lit-linux-amd64" python3 -B -m unittest discover -s tests -p test_dotnet_units.py
       # lit as root in a container must leave nothing the runner cannot remove.
       - name: Root hygiene
         run: scripts/root-hygiene.sh "$RUNNER_TEMP/lit-linux-amd64"

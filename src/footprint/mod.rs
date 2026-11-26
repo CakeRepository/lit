@@ -2,6 +2,7 @@
 pub(crate) mod cache;
 mod compare;
 mod digests;
+pub(crate) mod dotnet;
 mod events;
 mod glob;
 mod record;

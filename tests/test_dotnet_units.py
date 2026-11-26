@@ -181,6 +181,34 @@ class Records(unittest.TestCase):
             self.store, "t", self.work, self.work / "out" / "Tests.dll",
             ["python3", "runner.py", "{filter}"], mode=mode, jobs=2)
 
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "compares the binary with the reference")
+    def test_native_store_parity_and_reuse_after_a_data_change(self):
+        from e2e_github import lit
+
+        def run(mode, rate="0", fail=""):
+            args = ["dotnet-units", "--store", "store", "--job", "t", "--workdir", "repo",
+                    "--tests-dll", "repo/out/Tests.dll", "--run", "python3 runner.py {filter}",
+                    "--mode", mode, "--audit-rate", rate, "--jobs", "2", "--log", "test.log",
+                    "--receipt", "receipt.json", "--list", "classes.txt"]
+            env = {"FAKE_FAIL": fail, "DOTNET_NOLOGO": "true", "PYTHONDONTWRITEBYTECODE": "1"}
+            pair = lit(self.root, env, "parity", *args)
+            self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+            native = lit(self.root, dict(env, LIT_PYTHON=str(self.root / "unavailable")), *args)
+            self.assertEqual(native.returncode, int(bool(fail)), native.stdout + native.stderr)
+            row = json.loads((self.root / "receipt.json").read_text())
+            self.assertEqual((self.root / "classes.txt").read_text().splitlines(), row["run"])
+            return row
+
+        self.assertEqual(run("sweep")["recorded"], 5)
+        self.assertEqual(run("enforce")["reused"], 5)
+        self.assertEqual(run("refresh", "1", "Tests.DataTests")["failed"], ["Tests.DataTests"])
+        self.assertEqual(run("refresh")["run"], ["Tests.DataTests"])
+        (self.work / "data/fixture.txt").write_text("changed")
+        (self.work / "data/optional.txt").write_text("now present")
+        self.commit()
+        self.assertEqual(run("plan")["reasons"], {"files": 3, "reusable": 2})
+        self.assertEqual(run("enforce")["run"], ["Tests.ConfigTests", "Tests.DataTests", "Tests.ShapeTests"])
+
     def test_each_class_keeps_only_what_it_read(self):
         swept = self.run_units("sweep")
         self.assertEqual((swept["ran"], swept["recorded"], swept["exit_code"]), (5, 5, 0))
