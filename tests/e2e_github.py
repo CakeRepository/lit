@@ -122,6 +122,7 @@ class FakeGitHub:
         """Environment for a lit process that should talk to this fake."""
         return dict(
             GITHUB_API_URL=f"http://127.0.0.1:{self.server.server_port}",
+            GITHUB_GRAPHQL_URL=f"http://127.0.0.1:{self.server.server_port}/graphql",
             GH_TOKEN="test-token",
             LIT_GITHUB_API="rest",
             GIT_CONFIG_COUNT="1",
