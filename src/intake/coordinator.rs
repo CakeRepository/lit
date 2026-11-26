@@ -479,6 +479,9 @@ impl Intake<'_> {
             return Ok(true);
         }
         if green {
+            if let Some(progress) = self.direct_batch(refs, lock, row, &pr, &m, &remaining)? {
+                return Ok(progress);
+            }
             return self.checked(refs, lock, row, &pr, None);
         }
         self.wait_reason(

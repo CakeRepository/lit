@@ -21,12 +21,12 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## One binary
 
-Download the executable for your OS and CPU from the [v0.1.0 release](https://github.com/CakeRepository/lit/releases/tag/v0.1.0). The Linux builds statically link musl. The macOS assets begin with `lit-darwin-` and the Windows assets end in `.exe`. Each platform ships `amd64` (Intel/AMD x86-64) and `arm64` builds.
+Download the executable for your OS and CPU from the [v0.1.1 release](https://github.com/CakeRepository/lit/releases/tag/v0.1.1). The Linux builds statically link musl. The macOS assets begin with `lit-darwin-` and the Windows assets end in `.exe`. Each platform ships `amd64` (Intel/AMD x86-64) and `arm64` builds.
 
 For example, install the Linux amd64 release under your home directory:
 
 ```sh
-release=https://github.com/CakeRepository/lit/releases/download/v0.1.0
+release=https://github.com/CakeRepository/lit/releases/download/v0.1.1
 (
   set -eu
   dir=$(mktemp -d)
@@ -42,7 +42,7 @@ release=https://github.com/CakeRepository/lit/releases/download/v0.1.0
 
 For another platform, download its asset and compare its SHA-256 with the matching entry in `SHA256SUMS`. On macOS use `shasum -a 256` and on Windows use `Get-FileHash -Algorithm SHA256`. Rename the verified executable to `lit` or `lit.exe` and place it on your path. To build from source, run `cargo build --release --locked`.
 
-The `actions/batcher` and `actions/cached-run` composite actions download the release to a private runner temp directory and verify the SHA-256 pinned in the action checkout. The [release notes](https://github.com/CakeRepository/lit/releases/tag/v0.1.0) list the action commit to pin in workflows.
+The `actions/batcher` and `actions/cached-run` composite actions download the release to a private runner temp directory and verify the SHA-256 pinned in the action checkout. The [release notes](https://github.com/CakeRepository/lit/releases/tag/v0.1.1) list the action commit to pin in workflows.
 
 All 19 operational commands run in the Rust binary. Contributors can compare one with the Python 3.12+ reference by setting `LIT_REFERENCE` to an absolute path to a trusted copy of the lit source at the same revision. From a fixture directory, `lit parity COMMAND ...` compares exit codes, output, files, Git refs and batch commit IDs in two private copies. For intake fixtures, [the queue replay tests](tests/test_native_intake.py) show how to record GitHub responses and compare outgoing mutations without changing a live repository.
 
@@ -184,7 +184,7 @@ jobs:
 
 With many agents, more PRs pass alone and fail together, and one batch of everything spends most of its runs halving. `--max-batch N` (the action's `max-batch` input) caps a fresh batch at the N lowest-numbered ready PRs; the rest stay pinned for the next one. `--max-batch auto` sizes each batch from the recent share of PRs that came back red, using Hwang's binary splitting: about one in ten red gives batches of 8, one in a hundred gives 64, and it starts at 32. The counts live in the intake's own record under `refs/heads/lit/active/BRANCH`.
 
-The merge queue tests a batch again after its PRs already passed, and in a busy repository that wait is most of the time from green to merged. `--direct-context CONTEXT` (the action's `direct-context` input) skips it when the PRs' own checks already cover the batch: every PR passed that status, a full-suite run set by the repository's own workflow, at its exact head, no two PRs change the same file, the branch has not changed any of those files since a PR was tested, and the batch changes nothing outside its PRs. lit then pushes the batch tip to the branch itself in the same atomic push that closes the batch, and GitHub marks each PR merged. A batch that misses any of these, or that the branch refuses, goes through the merge queue, and its record under `refs/heads/lit/active/BRANCH` says why. The App has to be on the branch ruleset's bypass list for the push to land.
+The merge queue tests a batch again after its PRs already passed, and in a busy repository that wait is most of the time from green to merged. `--direct-context CONTEXT` (the action's `direct-context` input) names a full-suite status set by the repository's own workflow, and skips the queue when checks that already ran cover the batch. Either the batch PR passed that status at its exact tip and the branch has not moved since the batch was built, so the tested tree is the tree that lands, or every PR passed it at its exact head, no two PRs change the same file, the branch has not changed any of those files since a PR was tested, and the batch changes nothing outside its PRs. lit then pushes the batch tip to the branch itself in the same atomic push that closes the batch, and GitHub marks each PR merged. A batch that misses these, or that the branch refuses, goes through the merge queue, and its record under `refs/heads/lit/active/BRANCH` says why. The App has to be on the branch ruleset's bypass list for the push to land.
 
 Use a GitHub App token: branches and PRs created with the workflow's own `GITHUB_TOKEN` start no checks. The App needs read and write access to contents, pull requests and workflows, and read access to actions, checks, commit statuses and issues. The other intake actions are `ready N...` to pin named PRs, `drain [--no-wait]` to resume, `withdraw N HEAD` to take a pin back, and `report N` to count the workflow runs a landed batch used.
 

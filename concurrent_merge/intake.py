@@ -692,6 +692,9 @@ class Intake:
             and pr["mergeStateStatus"] == "CLEAN"
             and pr["reviewDecision"] in (None, "APPROVED")
         ):
+            progress = self.direct_batch(refs, lock, record, pr)
+            if progress is not None:
+                return progress
             return self.admit_checked(refs, lock, record, pr, None)
         return self.wait_reason(
             number,
@@ -709,7 +712,7 @@ class Intake:
 
         Returns the pass's progress, or None to use the merge queue."""
         context, members = self.direct_context, record["members"]
-        if not context or "direct" in record or not members:
+        if not context or "direct" in record or "refused" in record or not members:
             return None
         base, tip, target = record["base"], record["tip"], refs[self.target]
         self.fetch_commits([target, base, tip])
@@ -751,11 +754,31 @@ class Intake:
         why = direct_overlap(self.branch, footprints, names(base, tip))
         if why:
             return self.queue_instead(lock, record, why)
-        edits = self.finish_edits(refs, lock, landed, members)
+        return self.land(refs, lock, record)
+
+    def direct_batch(self, refs, lock, record, pr):
+        """Land a batch whose PR passed the full-suite status at its exact tip on the current target.
+
+        The tree that was tested is then the tree that lands. Returns the pass's progress, or None."""
+        context = self.direct_context
+        if not context or "refused" in record or refs.get(self.target) != record["base"]:
+            return None
+        status = trusted_status(self.repository, pr, record["tip"], context)
+        if not status or status.get("state") != "SUCCESS":
+            return None
+        return self.land(refs, lock, record)
+
+    def land(self, refs, lock, record):
+        """Push the batch tip to the target in the same atomic push that closes the batch."""
+        members, short = record["members"], record["tip"][:12]
+        edits = self.finish_edits(refs, lock, counted(record, 0, len(members)), members)
         try:
-            self.push([*edits, (self.target, base, tip)])
+            self.push([*edits, (self.target, record["base"], record["tip"])])
         except RuntimeError as error:
-            return self.queue_instead(lock, record, f"{self.branch} refused lit's push: {refusal(str(error))}")
+            why = f"{self.branch} refused lit's push: {refusal(str(error))}"
+            print(f"Batch {short} goes through the merge queue: {why}", flush=True)
+            self.push([(self.active, lock, self.record(dict(record, refused=why), lock))])
+            return True
         listed = ", ".join(f"#{n}" for n, _ in members)
         print(
             f"Landed batch {short} directly on {self.branch} with {len(members)} source PRs: {listed}.",

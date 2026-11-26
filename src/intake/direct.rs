@@ -1,6 +1,7 @@
-//! Land a batch on the target branch itself, without the merge queue, when every member
-//! already passed the full-suite status at its exact head and no two of them, nor the commits
-//! that reached the target since a member was tested, change the same file. Anything else goes
+//! Land a batch on the target branch itself, without the merge queue, when checks that already
+//! ran cover it: either the batch PR passed the full-suite status at its exact tip on the current
+//! target, or every member passed it at its exact head and no two of them, nor the commits that
+//! reached the target since a member was tested, change the same file. Anything else goes
 //! through the merge queue as before, and the record says why.
 use super::*;
 use crate::merge::path_changes;
@@ -58,7 +59,7 @@ impl Intake<'_> {
         let Some(context) = self.direct.clone() else {
             return Ok(None);
         };
-        if row.get("direct").is_some() || m.is_empty() {
+        if row.get("direct").is_some() || row.get("refused").is_some() || m.is_empty() {
             return Ok(None);
         }
         let base = row.field("base")?.string()?;
@@ -128,6 +129,47 @@ impl Intake<'_> {
         if let Some(why) = overlap(self.src.branch, &changes, &names(base, tip)?) {
             return self.queue_instead(lock, row, why);
         }
+        self.land(refs, lock, row, m, remaining).map(Some)
+    }
+    /// Land a batch whose PR passed the full-suite status at its exact tip, built on the current
+    /// target: the tree that was tested is the tree that lands. Some(progress) when it did.
+    pub(super) fn direct_batch(
+        &mut self,
+        refs: &Refs,
+        lock: &str,
+        row: &Value,
+        pr: &Value,
+        m: &[Member],
+        remaining: &[Value],
+    ) -> Result<Option<bool>> {
+        let Some(context) = self.direct.clone() else {
+            return Ok(None);
+        };
+        let tip = row.field("tip")?.string()?;
+        if row.get("refused").is_some()
+            || refs.get(&self.target).map(String::as_str) != Some(row.field("base")?.string()?)
+            || self
+                .src
+                .status(pr, tip, &context)
+                .and_then(|s| string(s, "state"))
+                != Some("SUCCESS")
+        {
+            return Ok(None);
+        }
+        self.land(refs, lock, row, m, remaining).map(Some)
+    }
+    /// Push the batch tip to the target in the same atomic push that closes the batch.
+    fn land(
+        &self,
+        refs: &Refs,
+        lock: &str,
+        row: &Value,
+        m: &[Member],
+        remaining: &[Value],
+    ) -> Result<bool> {
+        let base = row.field("base")?.string()?;
+        let tip = row.field("tip")?.string()?;
+        let landed = split::counted(row, 0, m.len())?;
         let mut edits = self.finish_edits(refs, lock, &landed, m, remaining.to_vec(), &[])?;
         edits.push((self.target.clone(), base.into(), tip.into()));
         if let Err(e) = self.push(edits) {
@@ -136,11 +178,13 @@ impl Intake<'_> {
                 self.src.branch,
                 refusal(&e.to_string())
             );
-            return self.queue_instead(lock, row, why);
+            println!("Batch {} goes through the merge queue: {why}", short(row)?);
+            self.change_record(lock, &with(row, "refused", Value::String(why))?)?;
+            return Ok(true);
         }
-        let list = numbers
+        let list = m
             .iter()
-            .map(|n| format!("#{n}"))
+            .map(|(n, _)| format!("#{n}"))
             .collect::<Vec<_>>()
             .join(", ");
         println!(
@@ -149,7 +193,7 @@ impl Intake<'_> {
             self.src.branch,
             m.len()
         );
-        Ok(Some(true))
+        Ok(true)
     }
 }
 
