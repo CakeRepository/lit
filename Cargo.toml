@@ -1,0 +1,17 @@
+[package]
+name = "lit"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+description = "lit lands many concurrent changes at once: one binary, no runtime to install"
+repository = "https://github.com/CakeRepository/lit"
+publish = false
+
+# No dependencies: lit has none today, and each one added later comes with a PR that says why.
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

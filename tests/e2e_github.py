@@ -132,7 +132,7 @@ class FakeGitHub:
 
 
 def lit_command():
-    """How to run lit: LIT_BIN (the Go binary) or this checkout's Python lit."""
+    """How to run lit: LIT_BIN (the lit binary) or this checkout's Python lit."""
     if os.environ.get("LIT_BIN"):
         return [os.environ["LIT_BIN"]]
     return [sys.executable, "-B", "-c",

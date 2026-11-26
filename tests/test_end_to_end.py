@@ -2,7 +2,7 @@
 
 GitHub is replaced by tests/e2e_github.py (local bare repositories and a small REST
 server), so everything else is real: Git, the batch engine, the test command and
-the landing push. Set LIT_BIN to run the same checks against the Go binary.
+the landing push. Set LIT_BIN to run the same checks against the lit binary.
 
 The PRs, all opened against the same main:
   #1 alice  adds a file nobody else touches
@@ -246,7 +246,7 @@ class EndToEnd(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("LIT_BIN"), "lit parity is part of the binary")
     def test_parity_of_collect_and_run(self):
         """The commands this scenario drives give the same result run twice from the
-        same inputs, and, once they move to Go, the same result in Go as in Python."""
+        same inputs, and, once they move to Rust, the same result in Rust as in Python."""
         s = self.s
         git(s.root, "clone", "-q", "--bare", str(s.gh.remote), "batch.git")
         collect = ["collect", s.gh.repository, "--repo", "batch.git", "--out", "queue.json",
