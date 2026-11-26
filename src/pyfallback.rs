@@ -334,39 +334,6 @@ pub fn command(python: &Path, dir: &Path, args: &[String], python_only: bool) ->
     cmd
 }
 
-fn components() -> Result<&'static (PathBuf, PathBuf), String> {
-    use std::sync::OnceLock;
-    static PREPARED: OnceLock<Result<(PathBuf, PathBuf), String>> = OnceLock::new();
-    PREPARED
-        .get_or_init(|| {
-            Ok((
-                python()?,
-                extract(crate::embedded::FILES, &std::env::temp_dir())
-                    .map_err(|e| e.to_string())?,
-            ))
-        })
-        .as_ref()
-        .map_err(String::clone)
-}
-
-pub fn shadow(params: &crate::json::Value) -> Result<(), String> {
-    let (python, dir) = components()?;
-    let source = "import sys,json; sys.path.insert(0,sys.argv[1]); from pathlib import Path; from concurrent_merge.cli import write_shadow, Repo\n\
-        p=json.loads(sys.argv[2]); snap=json.loads(Path(p['snapshot']).read_text(encoding='utf8'))\n\
-        write_shadow(Repo(p['repo']),snap,Path(p['store']),p['job'],Path(p['directory']),Path(p['proofs']) if p['proofs'] else None,p['discover'] or None,p['strip'])";
-    let status = Command::new(python)
-        .args(["-I", "-B", "-c", source])
-        .arg(dir)
-        .arg(crate::json::canonical(params))
-        .status()
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("shadow exited {status}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

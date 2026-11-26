@@ -264,6 +264,33 @@ class ShadowTests(unittest.TestCase):
         ).stdout
         self.assertEqual(json.loads(out)["components"][0]["needs"], ["tests/test_a.py"])
 
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "exercises native shadow parity")
+    def test_native_shadow_compares_conflicts_proofs_discovery_and_actual_suite(self):
+        from e2e_github import lit
+        root = Path(self.tmp.name)
+        one = self.commit({"src/a.py": "a = 3\n"}, self.base, "one")
+        two = self.commit({"src/a.py": "a = 4\n"}, self.base, "two")
+        three = self.commit({"src/db.ts": DB.replace("return 2", "return 5"),
+                             "tests/test_new.ts": "close()\n"}, self.base, "three")
+        four = self.commit({"README.md": "docs\n"}, self.base, "four")
+        self.record({"tests/test_a.py": (["src/a.py", "tests/test_a.py"], None)}, commit=one,
+                    store=root / "proofs")
+        snapshot = self.snapshot({8: one, 2: two, 5: three, 4: four})
+        (root / "q.json").write_text(json.dumps(snapshot))
+        (root / "result.json").write_text(json.dumps(dict(snapshot=snapshot, tested=[8, 5])))
+        (root / "attempts.json").write_text(json.dumps([{"result": "pass"}, {"result": "fail"}]))
+        args = ["shadow", "q.json", "--repo", "work", "--store", "store", "--job", "suite",
+                "--proofs", "proofs", "--result", "result.json", "--discover", "tests/test_*", "--out", "decision.json"]
+        pair = lit(root, {}, "parity", *args)
+        self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+        native = lit(root, {"LIT_PYTHON": str(root / "no-python")}, *args)
+        self.assertEqual(native.returncode, 0, native.stdout + native.stderr)
+        row = json.loads((root / "decision.json").read_text())
+        self.assertEqual(row["decision"]["conflicts"], {"2": {"inputs": ["src/a.py"], "held_by": [8]}})
+        self.assertEqual(row["decision"]["components"][0]["by_proof"], ["tests/test_a.py"])
+        self.assertEqual(row["decision"]["components"][1]["unrecorded"], ["tests/test_new.ts"])
+        self.assertEqual(row["outcome"]["unrun_but_failed"], [4])
+
     def test_beside_a_run_it_reports_what_frontier_would_have_skipped_that_failed(self):
         docs = self.commit({"README.md": "lit, faster\n"}, self.base, "docs")
         one = self.commit({"src/a.py": "a = 2\n"}, self.base, "one")

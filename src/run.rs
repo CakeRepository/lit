@@ -228,52 +228,14 @@ fn shadow(repo: &Repo, snapshot: &Path, args: &Args<'_>, directory: &Path) -> Re
     let Some(store) = args.optional("--shadow-store") else {
         return Ok(());
     };
-    let job = args.required("--shadow-job")?;
-    let params = object([
-        (
-            "repo",
-            Value::String(repo.path().to_string_lossy().into_owned()),
-        ),
-        (
-            "snapshot",
-            Value::String(snapshot.to_string_lossy().into_owned()),
-        ),
-        (
-            "directory",
-            Value::String(directory.to_string_lossy().into_owned()),
-        ),
-        ("store", store.into()),
-        ("job", job.into()),
-        (
-            "proofs",
-            args.optional("--shadow-proofs")
-                .map_or(Value::Null, Value::from),
-        ),
-        (
-            "discover",
-            Value::Array(
-                args.all("--shadow-discover")
-                    .iter()
-                    .map(|&s| s.into())
-                    .collect(),
-            ),
-        ),
-        (
-            "strip",
-            args.optional("--shadow-strip").unwrap_or("").into(),
-        ),
-    ]);
-    if let Err(e) = crate::pyfallback::shadow(&params) {
-        eprintln!("lit: shadow decision failed: {e}");
-        merge::write_json(
-            &directory.join("shadow.json"),
-            &object([
-                ("kind", "lit-shadow-decision".into()),
-                ("error", Value::String(e)),
-            ]),
-        )?;
-    }
-    Ok(())
+    let options = crate::footprint::shadow::Options {
+        store: Path::new(store),
+        job: args.required("--shadow-job")?,
+        proofs: args.optional("--shadow-proofs").map(Path::new),
+        discover: args.all("--shadow-discover").to_vec(),
+        strip: args.optional("--shadow-strip").unwrap_or(""),
+    };
+    crate::footprint::shadow::for_run(repo, snapshot, &options, directory)
 }
 
 fn argument_error(message: String) -> String {

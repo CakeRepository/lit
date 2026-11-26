@@ -1,0 +1,20 @@
+usage: concurrent-merge shadow [-h] --repo REPO --store STORE --job JOB
+                               [--result RESULT] [--proofs PROOFS]
+                               [--discover GLOB] [--strip STRIP] [--out OUT]
+                               snapshot
+
+positional arguments:
+  snapshot
+
+options:
+  -h, --help       show this help message and exit
+  --repo REPO
+  --store STORE
+  --job JOB
+  --result RESULT  A run's result.json, to compare with what actually passed
+  --proofs PROOFS  A store that 'proof take' filled: signed records count as
+                   certificates
+  --discover GLOB  Test files as cached-units finds them: any without a
+                   passing footprint is reported
+  --strip STRIP    Prefix to remove from a found path to get its unit name
+  --out OUT

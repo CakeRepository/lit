@@ -247,7 +247,7 @@ fn bindings(t: &Value) -> Result<Map> {
         .map(|(k, v)| Ok((k.clone(), v.field("bindings")?.clone())))
         .collect()
 }
-fn digests(t: &Value) -> Result<Value> {
+pub(super) fn digests(t: &Value) -> Result<Value> {
     let mut out: Map = t
         .field("symbols")?
         .object()?
