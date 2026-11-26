@@ -1,6 +1,7 @@
 //! A reader identifies byte ranges a three-way structural merge can treat as units.
 mod json_reader;
 mod markdown;
+mod powershell;
 mod python;
 pub(crate) mod structure;
 mod yaml;
@@ -48,6 +49,10 @@ enum Reader {
     Encoded(fn(&[u8]) -> Option<Vec<Node>>),
 }
 const READERS: &[(&[&str], Reader)] = &[
+    (
+        &[".ps1", ".psm1", ".psd1"],
+        Reader::Encoded(powershell::outline),
+    ),
     (&[".md", ".markdown"], Reader::Text(markdown::outline)),
     (&[".json"], Reader::Text(json_reader::outline)),
     (&[".yaml", ".yml"], Reader::Text(yaml::outline)),
