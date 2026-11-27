@@ -27,6 +27,7 @@ from unittest.mock import patch
 
 from e2e_github import FakeGitHub, git, lit
 from test_footprint import traced
+from stage_refs import StageRefs  # Include release bridges in the native end-to-end suite.
 
 CALC = textwrap.dedent('''\
     def add(a, b):

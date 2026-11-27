@@ -31,6 +31,7 @@ mod run;
 mod sampling;
 mod sha256;
 mod snapshot;
+mod stage;
 mod store;
 mod sys;
 
@@ -58,6 +59,7 @@ const NATIVE: &[(&str, Native)] = &[
     ("shadow", footprint::shadow::command),
     ("land", land::command),
     ("propose", propose::command),
+    ("stage", stage::command),
 ];
 
 fn native(name: &str) -> Option<Native> {

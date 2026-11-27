@@ -1078,6 +1078,9 @@ def main():
         type=Path,
         help="Additional Markdown to include in the PR description",
     )
+    cmds.add_parser("stage", help="Promote or roll back an approved snapshot in a bare Git repository")
+    if sys.argv[1:2] == ["stage"]:
+        p.error("stage requires the standalone lit binary")
     if sys.argv[1:2] == ["proof"]:
         from . import proof
 
