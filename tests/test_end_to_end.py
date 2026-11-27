@@ -779,6 +779,42 @@ class FootprintRecordingCLI(unittest.TestCase):
                              ["modified untracked files after reading them"])
             self.assertEqual(receipt["unrecorded"]["leaky.test"]["rewritten"], ["built.txt"])
 
+    def test_a_file_the_run_makes_with_o_creat_is_not_an_unknown_input(self):
+        # bun opens every file it writes with O_WRONLY|O_CREAT and no O_TRUNC, so its first touch looks like a
+        # read. A build that wrote dist/ and then read it back saved no record at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            (repo / "built.test").write_text("built")
+            (repo / "worker").write_text(
+                'import os, sys\n'
+                'os.makedirs("dist", exist_ok=True)\n'
+                'fd = os.open("dist/out.txt", os.O_WRONLY | os.O_CREAT, 0o644)\n'
+                'os.write(fd, open(sys.argv[1]).read().encode()); os.close(fd)\n'
+                'assert open("dist/out.txt").read() == "built"\n')
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "a build")
+            argv = ["cached-units", "--workdir", "repo", "--store", "store", "--job", "tests",
+                    "--each", "python3 worker {}", "--discover", "*.test", "--mode", "enforce",
+                    "--ignore-env", "*", "--audit-rate", "0", "--receipt", "receipt.json"]
+            env = {"LC_ALL": "C"}
+            if os.environ.get("LIT_BIN"):
+                pair = lit(root, env, "parity", *argv)
+                self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+                (repo / "dist" / "out.txt").unlink(missing_ok=True)
+            proc = lit(root, dict(env, LIT_PYTHON=str(root / "unavailable")), *argv)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            receipt = json.loads((root / "receipt.json").read_text())
+            self.assertEqual(receipt["failed"], [])
+            self.assertNotIn("built.test", receipt.get("unrecorded", {}))
+            (repo / "dist" / "out.txt").unlink()
+            proc = lit(root, dict(env, LIT_PYTHON=str(root / "unavailable")), *argv)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            receipt = json.loads((root / "receipt.json").read_text())
+            self.assertEqual(receipt["reused"], 1, receipt)
+
     def test_job_cache_shadow_enforce_audit_and_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             outer = Path(tmp)
