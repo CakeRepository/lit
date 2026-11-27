@@ -23,8 +23,8 @@ measured on synthetic workloads. It tracks issue #9.
 Two indexes answer every question, and no step compares one change against
 another:
 
-- `writer`: key Ã¢â€ â€™ the one admitted change writing it.
-- `readers`: key Ã¢â€ â€™ the units with a kept certificate reading it.
+- `writer`: key → the one admitted change writing it.
+- `readers`: key → the units with a kept certificate reading it.
 
 From them:
 
@@ -125,12 +125,12 @@ Let `|W|` be a change's write count, `R` the most keys one certificate lists,
 | step | cost |
 |---|---|
 | `admit(c)` | `O(|W(c)|)` |
-| `record(u)` | `O(R)`, or `O(KÃ‚Â·R)` when it trims |
-| `cone(c)` | `O(ÃŽÂ£ r(k) for k in W(c))` |
-| `touching(u)` | `O(KÃ‚Â·R)` |
-| `needs(G)` | `O(|cone(G)| Ã‚Â· K Ã‚Â· R)` |
-| `components()` over `n` changes | `O(ÃŽÂ£ |cone(c)| Ã‚Â· K Ã‚Â· R + n log n)` |
-| `land(G)` | `O(ÃŽÂ£ |W(c)|)` |
+| `record(u)` | `O(R)`, or `O(K·R)` when it trims |
+| `cone(c)` | `O(Σ r(k) for k in W(c))` |
+| `touching(u)` | `O(K·R)` |
+| `needs(G)` | `O(|cone(G)| · K · R)` |
+| `components()` over `n` changes | `O(Σ |cone(c)| · K · R + n log n)` |
+| `land(G)` | `O(Σ |W(c)|)` |
 
 None of these grows with the number of changes in flight. Only the
 change's own cone and the overlaps it really has count. Hot keys (high `r(k)`)
@@ -144,7 +144,7 @@ or real Git landings.
 
 - `python -m concurrent_merge.frontier_bench N`: admit, prove and land per
   change, with every other change left in flight, plus peak memory. On a map of
-  50,000 units reading 40 of 5,000,000 functions it stays under about 100 Ã‚Âµs
+  50,000 units reading 40 of 5,000,000 functions it stays under about 100 µs
   per change all the way to 1,000,000 changes (349,000 in flight at the end),
   and peak memory grows from 756 MB for the map alone to 1,967 MB.
 - `python -m concurrent_merge.frontier_bench grouping N`: `components()` cost
@@ -294,7 +294,7 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
 ## Release bridges
 
 `concurrent_merge/promotion.py` keeps releases apart from integration. Each
-stage (for example Lab Ã¢â€ â€™ Early Release Ã¢â€ â€™ Production) points at one snapshot
+stage (for example Lab → Early Release → Production) points at one snapshot
 of main and moves only by promotion from the stage before it.
 
 - **One artifact.** A snapshot is promoted as it is, never rebuilt, and each
