@@ -132,6 +132,8 @@ class IntakeCLI(unittest.TestCase):
 
     def test_a_closing_batch_swaps_the_rejected_pin_for_a_rejection_at_the_same_head(self):
         git(self.remote, "update-ref", "refs/heads/" + self.branch, self.tip)
+        prior = self.extra_pr(3)[1]
+        git(self.remote, "update-ref", "refs/heads/lit/rejected/1", prior)
         for n, head in self.members:
             git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
         # Source 1 failed alone; source 2 only rode along and is returned healthy.
@@ -143,7 +145,10 @@ class IntakeCLI(unittest.TestCase):
         ]))))
         self.rules.append(dict(method="PATCH", path=f"/repos/{REPO}/pulls/77", reply={}))
         side = self.parity("drain", "--no-wait")
-        self.assertEqual(self.refs(side, "refs/heads/lit"), f"refs/heads/lit/rejected/1 {self.members[0][1]}")
+        self.assertEqual(self.refs(side, "refs/heads/lit").splitlines(), [
+            f"refs/heads/lit/prior-rejections/{prior} {prior}",
+            f"refs/heads/lit/rejected/1 {self.members[0][1]}",
+        ])
 
     def test_tick_holds_out_a_rejected_head_batches_the_rest_and_readmits_after_a_new_push(self):
         (first, head1), (second, head2) = self.members
@@ -371,6 +376,29 @@ class IntakeCLI(unittest.TestCase):
         side = self.parity("--direct-context", "full", "drain", "--no-wait")
         self.assertEqual(self.landed_order(side), ["1", "2"])
         self.assertTrue(self.refs(side, "refs/heads/lit/parallel"))
+
+    def test_an_isolated_sibling_with_a_changed_tree_waits_for_protected_validation(self):
+        member, (_, base) = self.members
+        git(self.remote, "update-ref", "refs/heads/main", base)
+        git(self.remote, "update-ref", "refs/heads/lit/ready/1", member[1])
+        self.full_suite(1)
+        repo = Repo(self.remote)
+        snapshot = dict(base=base, changes=[dict(number=1, head=member[1], author="dev")])
+        with patch.dict(os.environ, SOURCE_DATE_EPOCH=EPOCH):
+            tip, _ = Engine(repo, self.root / "sibling").batch(base, verified_changes(repo, snapshot), lambda _: "model")
+        self.lock(dict(base=base, tip=tip, members=[member], remaining=[], started=WHEN, isolated_sibling=True),
+                  parent=tip, ref="refs/heads/lit/parallel/main")
+        self.prs[78] = dict(self.pr(78, tip), isInMergeQueue=True)
+        self.pulls([1])
+        self.pulls([78])
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=78, state="OPEN", headRefOid=tip, isCrossRepository=False, url="fixture")
+        ]))))
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/parallel/main"))
+        self.assertEqual(record["direct"], "isolated source requires its exact combined tree")
+        self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), base)
 
     def test_a_pr_without_the_full_suite_sends_the_batch_through_the_queue(self):
         self.pinned_batch()

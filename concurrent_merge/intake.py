@@ -289,10 +289,21 @@ class Intake:
                 data=("\n".join(missing) + "\n").encode("ascii"),
             )
 
+    def retain_rejection(self, refs, edits, old):
+        history = "refs/heads/lit/prior-rejections/" + old
+        if history in refs or any(ref == history for ref, _, _ in edits):
+            return
+        base = refs[self.target]
+        self.fetch_commits([base, old])
+        reachable = self.repo.run("merge-base", "--is-ancestor", old, base, check=False)
+        if reachable.returncode not in (0, 1):
+            reachable.check_returncode()
+        if reachable.returncode:
+            edits.append((history, "", old))
+
     def register(self, numbers):
         refs, edits = self.refs(), []
         admitted = 0
-        archived = set()
         for n, (pr, _) in pull_many(self.repository, numbers).items():
             head = pr["headRefOid"] if pr else ""
             reason = eligibility(self.repository, self.branch, pr, head, self.context)
@@ -304,15 +315,7 @@ class Intake:
                 print(f"#{n} failed checks alone at {head[:12]}; waiting for a new push", flush=True)
                 continue
             if held:
-                base = refs[self.target]
-                self.fetch_commits([base, held])
-                reachable = self.repo.run("merge-base", "--is-ancestor", held, base, check=False)
-                if reachable.returncode not in (0, 1):
-                    reachable.check_returncode()
-                history = "refs/heads/lit/prior-rejections/" + held
-                if reachable.returncode and history not in refs and held not in archived:
-                    edits.append((history, "", held))
-                    archived.add(held)
+                self.retain_rejection(refs, edits, held)
                 edits.append((reject_ref(n), held, ""))
             admitted += 1
             ref = pin_ref(n)
@@ -326,6 +329,11 @@ class Intake:
 
     def record(self, value, parent):
         tree = self.repo.out("rev-parse", parent + "^{tree}")
+        # Record messages determine commit IDs. Match the native writer even after a later
+        # transition adds a field to a record read from an older coordinator.
+        order = ("base", "tip", "members", "remaining", "started", "source_green_at",
+                 "originals", "individual", "red", "conflict_retry", "closing")
+        value = {k: value[k] for k in (*order, *sorted(value.keys() - set(order))) if k in value}
         return self.repo.out(
             "-c",
             "user.name=lit",
@@ -473,11 +481,14 @@ class Intake:
         edits = [
             (pin_ref(n), head, "") for n, head in remove if refs.get(pin_ref(n)) == head
         ]
-        edits += [
-            (reject_ref(n), refs.get(reject_ref(n), ""), head)
-            for n, head in reject
-            if refs.get(reject_ref(n)) != head
-        ]
+        for n, head in reject:
+            ref = reject_ref(n)
+            old = refs.get(ref, "")
+            if old == head:
+                continue
+            if old:
+                self.retain_rejection(refs, edits, old)
+            edits.append((ref, old, head))
         pending = record.get("remaining", []) if pending is None else pending
         red = record.get("red")
         if pending:
@@ -1059,6 +1070,8 @@ class Intake:
                         continue
                 except (ValueError, KeyError, RuntimeError, OSError, subprocess.SubprocessError) as why:
                     print(f"Parallel lane held: {why}", flush=True)
+                    if wait and "tip" not in record and not record.get("remaining"):
+                        raise
                 if "tip" not in record and not record.get("remaining"):
                     if not wait:
                         return

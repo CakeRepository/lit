@@ -176,12 +176,23 @@ impl Intake<'_> {
         }
         Ok(record)
     }
+    fn retain_rejection(&self, refs: &Refs, edits: &mut Vec<Edit>, old: &str) -> Result<()> {
+        let history = format!("refs/heads/lit/prior-rejections/{old}");
+        if refs.contains_key(&history) || edits.iter().any(|(r, _, _)| r == &history) {
+            return Ok(());
+        }
+        let base = refs.get(&self.target).ok_or("Missing target branch")?;
+        self.fetch([base.as_str(), old])?;
+        if !self.repo.ancestor(old, base)? {
+            edits.push((history, String::new(), old.into()));
+        }
+        Ok(())
+    }
     pub(super) fn register(&self, numbers: &[u64]) -> Result<()> {
         let refs = self.refs()?;
         let sources = self.src.pull_many(numbers)?;
         let mut edits = Vec::new();
         let mut admitted = 0;
-        let mut archived = BTreeSet::new();
         let mut seen = BTreeSet::new();
         for n in numbers.iter().filter(|n| seen.insert(**n)) {
             let pr = &sources[n].0;
@@ -199,15 +210,7 @@ impl Intake<'_> {
                 continue;
             }
             if let Some(old) = held {
-                let base = refs.get(&self.target).ok_or("Missing target branch")?;
-                self.fetch([base.as_str(), old.as_str()])?;
-                let history = format!("refs/heads/lit/prior-rejections/{old}");
-                if !self.repo.ancestor(old, base)?
-                    && !refs.contains_key(&history)
-                    && archived.insert(old.clone())
-                {
-                    edits.push((history, String::new(), old.clone()));
-                }
+                self.retain_rejection(&refs, &mut edits, old)?;
                 edits.push((rejected(*n), old.clone(), String::new()));
             }
             admitted += 1;
@@ -445,18 +448,17 @@ impl Intake<'_> {
             .filter(|(n, h)| refs.get(&pin(*n)) == Some(h))
             .map(|(n, h)| (pin(*n), h.clone(), String::new()))
             .collect();
-        edits.extend(
-            reject
-                .iter()
-                .filter(|(n, h)| refs.get(&rejected(*n)) != Some(h))
-                .map(|(n, h)| {
-                    (
-                        rejected(*n),
-                        refs.get(&rejected(*n)).cloned().unwrap_or_default(),
-                        h.clone(),
-                    )
-                }),
-        );
+        for (n, head) in reject {
+            let key = rejected(*n);
+            let old = refs.get(&key);
+            if old == Some(head) {
+                continue;
+            }
+            if let Some(old) = old {
+                self.retain_rejection(refs, &mut edits, old)?;
+            }
+            edits.push((key, old.cloned().unwrap_or_default(), head.clone()));
+        }
         let red = record.get("red").filter(|v| v.truthy());
         let next = if !pending.is_empty()
             || (red.is_some() && self.limit == Limit::Auto && !self.originals)

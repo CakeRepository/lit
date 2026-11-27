@@ -679,7 +679,12 @@ impl Intake<'_> {
                 match self.advance_parallel(&refs, &parallel, other) {
                     Ok(true) => continue,
                     Ok(false) => (),
-                    Err(e) => println!("Parallel lane held: {e}"),
+                    Err(e) => {
+                        println!("Parallel lane held: {e}");
+                        if wait && tip.is_none() && span(&row, "remaining")?.is_empty() {
+                            return Err(e);
+                        }
+                    }
                 }
                 if tip.is_none() && span(&row, "remaining")?.is_empty() {
                     if !wait {
