@@ -21,12 +21,12 @@ Every command reads and writes plain files and Git refs, so an agent can inspect
 
 ## One binary
 
-Download the executable for your OS and CPU from the [v0.1.3 release](https://github.com/CakeRepository/lit/releases/tag/v0.1.3). The Linux builds statically link musl. The macOS assets begin with `lit-darwin-` and the Windows assets end in `.exe`. Each platform ships `amd64` (Intel/AMD x86-64) and `arm64` builds.
+Download the executable for your OS and CPU from the [v0.1.4 release](https://github.com/CakeRepository/lit/releases/tag/v0.1.4). The Linux builds statically link musl. The macOS assets begin with `lit-darwin-` and the Windows assets end in `.exe`. Each platform ships `amd64` (Intel/AMD x86-64) and `arm64` builds.
 
 For example, install the Linux amd64 release under your home directory:
 
 ```sh
-release=https://github.com/CakeRepository/lit/releases/download/v0.1.3
+release=https://github.com/CakeRepository/lit/releases/download/v0.1.4
 (
   set -eu
   dir=$(mktemp -d)
