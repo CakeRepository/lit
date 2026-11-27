@@ -490,7 +490,17 @@ class IntakeCLI(unittest.TestCase):
         self.prs[78] = self.pr(78, first)
         self.prs[78]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0]["state"] = "PENDING"
         self.pulls([1, 2])
-        for n, head in ((77, self.tip), (78, first)):
+        wrappers = [(77, self.tip), (78, first)]
+        if early:
+            self.pulls([2])
+            n, h = self.members[1]
+            repo = Repo(self.remote)
+            snapshot = dict(base=self.base, changes=[dict(number=n, head=h, author="dev")])
+            with patch.dict(os.environ, SOURCE_DATE_EPOCH=EPOCH):
+                sibling, _ = Engine(repo, self.root / "second").batch(self.base, verified_changes(repo, snapshot), lambda _: "model")
+            self.prs[79] = dict(self.pr(79, sibling), isInMergeQueue=True)
+            wrappers.append((79, sibling))
+        for n, head in wrappers:
             self.pulls([n])
             self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
                 dict(number=n, state="OPEN", headRefOid=head, isCrossRepository=False, url="fixture")
@@ -513,7 +523,9 @@ class IntakeCLI(unittest.TestCase):
         next_batch = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
         if early:
             self.assertEqual(next_batch["members"], [self.members[0]])
-            self.assertEqual(next_batch["remaining"], [[self.members[1]]])
+            parallel = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/parallel/main"))
+            self.assertEqual(parallel["members"], [self.members[1]])
+            self.assertTrue(parallel["isolated_sibling"])
             self.assertEqual(len(self.refs(side, "refs/heads/lit/ready").splitlines()), 2)
             self.assertEqual(self.refs(side, "refs/heads/lit/rejected"), "")
             self.assertEqual(git(remote, "rev-parse", "main"), self.base)
