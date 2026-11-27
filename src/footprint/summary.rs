@@ -99,6 +99,9 @@ pub fn summarize(
                 absent.insert(rel.into());
             } else if produced.contains(path) {
                 shared.insert(rel.into());
+            } else if e.created.contains(path) {
+                // this run's own O_CREAT made it, so it must not exist beforehand
+                absent.insert(rel.into());
             } else {
                 unknown.insert(rel.into());
             }

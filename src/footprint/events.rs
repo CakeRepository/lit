@@ -72,7 +72,7 @@ fn normalize(s: &str) -> String {
 }
 #[derive(Clone)]
 enum Op {
-    Touch(String, bool, bool), // written, missing
+    Touch(String, bool, bool, bool), // written, missing, created
     List(String),
     Net(String),
     Unresolved(String),
@@ -86,6 +86,9 @@ pub struct Events {
     pub first: BTreeMap<String, bool>,
     pub written: BTreeSet<String>,
     pub missing: BTreeSet<String>,
+    // First opened with O_CREAT and without O_TRUNC: absent from the checkout, such a path was made by this
+    // open (bun writes every file this way), so nothing that existed before was read there.
+    pub created: BTreeSet<String>,
     pub listed: BTreeSet<String>,
     pub network: Vec<String>,
     pub unresolved: Vec<String>,
@@ -94,7 +97,7 @@ pub struct Events {
 impl Events {
     fn apply(&mut self, op: &Op) {
         match op {
-            Op::Touch(p, write, missing) => {
+            Op::Touch(p, write, missing, created) => {
                 if *write {
                     self.written.insert(p.clone());
                 }
@@ -104,6 +107,9 @@ impl Events {
                     slot.insert(*write);
                     if !write && *missing {
                         self.missing.insert(p.clone());
+                    }
+                    if !write && *created {
+                        self.created.insert(p.clone());
                     }
                 }
             }
@@ -134,7 +140,10 @@ impl Trace {
         }
     }
     fn touch(&mut self, pid: u64, p: &str, write: bool, missing: bool) {
-        self.note(pid, Op::Touch(normalize(p), write, missing));
+        self.note(pid, Op::Touch(normalize(p), write, missing, false));
+    }
+    fn touch_created(&mut self, pid: u64, p: &str, write: bool, missing: bool) {
+        self.note(pid, Op::Touch(normalize(p), write, missing, true));
     }
     fn feed(
         &mut self,
@@ -241,14 +250,23 @@ impl Trace {
                 .iter()
                 .any(|s| args.contains(s));
             let truncate = write && (args.contains("O_TRUNC") || args.contains("O_EXCL"));
+            let created = args.contains("O_CREAT") && !failed;
             if !truncate {
-                self.touch(pid, first, false, missing);
+                if created {
+                    self.touch_created(pid, first, false, missing);
+                } else {
+                    self.touch(pid, first, false, missing);
+                }
             }
             if write {
                 self.touch(pid, first, true, false);
             }
             if let Some(real) = fd(result).filter(|_| !failed) {
-                self.touch(pid, &real, truncate, false);
+                if created {
+                    self.touch_created(pid, &real, truncate, false);
+                } else {
+                    self.touch(pid, &real, truncate, false);
+                }
             }
         } else if matches!(
             name,

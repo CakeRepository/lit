@@ -210,6 +210,9 @@ class Events:
         self.record = record
         self.first = {}  # path -> "read" | "write"
         self.missing = set()  # paths whose first read failed with ENOENT/ENOTDIR
+        # Paths first opened with O_CREAT and without O_TRUNC: when such a path was not in the checkout, this
+        # open made it (bun writes every file this way), so the run read nothing there that existed before.
+        self.created = set()
         self.listed = set()
         self.cwd = {}
         self.network = []
@@ -223,16 +226,18 @@ class Events:
         self.pid = None
         self.now = None
 
-    def touch(self, path, kind, missing=False):
+    def touch(self, path, kind, missing=False, created=False):
         path = os.path.normpath(path)
         if self.record:
-            self.log.append(("touch", self.pid, path, kind, missing))
+            self.log.append(("touch", self.pid, path, kind, missing, created))
         if kind == "write":
             self.written.add(path)
         if path not in self.first:
             self.first[path] = kind
             if kind == "read" and missing:
                 self.missing.add(path)
+            if kind == "read" and created:
+                self.created.add(path)
 
     def note(self, kind, *rest):
         if self.record:
@@ -312,16 +317,17 @@ class Events:
                 flag in args for flag in (b"O_WRONLY", b"O_RDWR", b"O_CREAT", b"O_TRUNC")
             )
             truncate = b"O_TRUNC" in args or b"O_EXCL" in args
+            created = b"O_CREAT" in args and not failed
             if write and truncate:
                 self.touch(paths[0], "write")
             else:
-                self.touch(paths[0], "read", missing)
+                self.touch(paths[0], "read", missing, created)
                 if write:
                     self.touch(paths[0], "write")
             opened = FD.match(result)
             if opened and not failed:
                 real = unhex(opened.group(2))
-                self.touch(real, "write" if write and truncate else "read")
+                self.touch(real, "write" if write and truncate else "read", created=created)
             return
         if name in WRITES:
             for path in paths:
@@ -544,6 +550,8 @@ def summarize(events, checkout, entries, ignore_env, env, listed=None, produced=
                 absent.add(rel)
             elif path in produced:
                 shared.add(rel)
+            elif path in events.created:
+                absent.add(rel)  # this run's own O_CREAT made it, so it must not exist beforehand
             else:
                 unknown.add(rel)
         elif path in produced:
