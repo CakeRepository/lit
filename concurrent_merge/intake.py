@@ -107,7 +107,7 @@ def run_receipts(repository, run_id, directory, patterns=RECEIPT_ARTIFACTS):
     return failed
 
 
-def queue_runs(rows, branch, number):
+def queue_runs(rows, branch, number, group=None):
     """Ids of the completed runs of batch #number's newest merge group, oldest first.
 
     A batch that fails in the merge queue keeps its fast PR status, and the
@@ -116,7 +116,10 @@ def queue_runs(rows, branch, number):
     prefix = f"gh-readonly-queue/{branch}/pr-{number}-"
     done = [
         r for r in rows
-        if str(r.get("head_branch") or "").startswith(prefix) and r.get("status") == "completed"
+        if str(r.get("head_branch") or "").startswith(prefix) and (
+            r.get("head_sha") == group and r.get("run_attempt") == 1
+            if group is not None else r.get("status") == "completed"
+        )
     ]
     if not done:
         return []
@@ -678,8 +681,10 @@ class Intake:
                 if failed:
                     age = int((datetime.fromisoformat(now()) - datetime.fromisoformat(record["started"])).total_seconds())
                     print(f"Batch #{number}: required check {failed} failed on {group} after {age}s; splitting.", flush=True)
-                    _, pending, _ = split_failed(record["members"], record["remaining"], {}, {})
-                    self.plan_close(lock, record, [], pending)
+                    remove, pending, why = self.blame(number, record, {}, group)
+                    print(f"Batch #{number}: {why}", flush=True)
+                    self.plan_close(lock, counted(record, len(remove), len(remove)), remove, pending,
+                                    **(dict(reject=remove) if remove else {}))
                     return True
             detail = (
                 f"protected group {group[:12]} assigned"
@@ -847,7 +852,7 @@ class Intake:
         )
         return True
 
-    def blame(self, number, record, trusted):
+    def blame(self, number, record, trusted, group=None):
         """Who leaves a failed batch, from what its failing test files read (see split_failed)."""
         members = record["members"]
         run = (trusted.get("targetUrl") or "").rsplit("/", 1)[-1]
@@ -860,10 +865,10 @@ class Intake:
                     f"repos/{self.repository}/actions/runs",
                     dict(event="merge_group", per_page=100),
                 )
-                runs = queue_runs((listing or {}).get("workflow_runs") or [], self.branch, number)
+                runs = queue_runs((listing or {}).get("workflow_runs") or [], self.branch, number, group)
             except (github.GitHubError, OSError, ValueError, KeyError, TypeError):
                 runs = []
-            if not runs and run.isdigit():
+            if not runs and group is None and run.isdigit():
                 runs = [run]
             for each in runs:
                 with tempfile.TemporaryDirectory(prefix="lit-receipts-") as directory:

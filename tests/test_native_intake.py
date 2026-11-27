@@ -466,7 +466,10 @@ class IntakeCLI(unittest.TestCase):
     def test_a_failed_batch_returns_the_implicated_source_and_rechecks_the_other(self):
         self.failed_batch(early=False)
 
-    def failed_batch(self, early):
+    def test_a_running_group_with_a_published_receipt_identifies_the_failing_source(self):
+        self.failed_batch(early=True, receipt_ready=True)
+
+    def failed_batch(self, early, receipt_ready=False):
         from zipfile import ZipFile, ZIP_DEFLATED
         first = git(self.remote, "rev-parse", self.tip + "^1")
         git(self.remote, "update-ref", "refs/heads/" + self.branch, self.tip)
@@ -510,8 +513,8 @@ class IntakeCLI(unittest.TestCase):
         zip_path = f"repos/{REPO}/actions/artifacts/211/zip"
         # The batch PR keeps its fast status (run 123); the failing tests' receipts are in its merge-group run.
         self.get("actions/runs?event=merge_group&per_page=100", dict(workflow_runs=[
-            dict(id=456, head_branch=f"gh-readonly-queue/main/pr-77-{self.base}", head_sha="group",
-                 status="completed", created_at=WHEN)]))
+            dict(id=456, head_branch=f"gh-readonly-queue/main/pr-77-{self.base}", head_sha=self.tip if receipt_ready else "group",
+                 status="in_progress" if early else "completed", run_attempt=1, created_at=WHEN)]))
         self.get("actions/runs/456/artifacts?per_page=100&page=1", dict(artifacts=[
             dict(name="lit-tests", expired=False, archive_download_url=zip_path)]))
         with ZipFile(self.root / "failed.zip", "w", compression=ZIP_DEFLATED) as archive:
@@ -521,7 +524,7 @@ class IntakeCLI(unittest.TestCase):
         side = self.parity("--max-batch", "auto", "drain", "--no-wait")
         remote = side / "intake-remote.git"
         next_batch = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
-        if early:
+        if early and not receipt_ready:
             self.assertEqual(next_batch["members"], [self.members[0]])
             parallel = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/parallel/main"))
             self.assertEqual(parallel["members"], [self.members[1]])

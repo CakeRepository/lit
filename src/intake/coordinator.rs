@@ -409,9 +409,16 @@ impl Intake<'_> {
                         Ok(Some(name)) => {
                             let age = seconds(row.field("started")?.string()?, &now()?)?;
                             println!("Batch #{n}: required check {name} failed on {group} after {age}s; splitting.");
-                            // A red group permits isolation, never rejection of an individual head.
-                            let (_, pending, _) = split::halves(&m, remaining, String::new());
-                            self.close_later(lock, row, &[], pending)?;
+                            let (remove, pending, why) =
+                                self.blame(n, row, &m, None, Some(group), remaining)?;
+                            println!("Batch #{n}: {why}");
+                            self.close_rejecting(
+                                lock,
+                                &split::counted(row, remove.len(), remove.len())?,
+                                &remove,
+                                pending,
+                                &remove,
+                            )?;
                             return Ok(true);
                         }
                         Err(e) => println!("Could not read required queue checks: {e}"),
@@ -473,7 +480,7 @@ impl Intake<'_> {
             println!("Batch #{n} left admission: {reason}");
             log_round(row, now().ok().as_deref(), false);
             if reason == "failed_checks" && m.len() > 1 {
-                let (remove, pending, why) = self.blame(n, row, &m, trusted, remaining)?;
+                let (remove, pending, why) = self.blame(n, row, &m, trusted, None, remaining)?;
                 println!("Batch #{n}: {why}");
                 self.close_rejecting(
                     lock,

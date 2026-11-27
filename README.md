@@ -257,7 +257,8 @@ Run the jobs that write the book in one concurrency group, and let only CI's tok
 
 On a queue pass, lit checks the first multi-PR entry's assigned group commit. A completed failure
 from a GitHub Actions check that GitHub marks required for the PR starts a split even while other
-jobs run. Both halves keep their pins. A running retry, an optional check or a replaced group
+jobs run. A published failed-read receipt from that exact group can identify the source.
+Otherwise both halves keep their pins. A running retry, an optional check or a replaced group
 cannot identify a failed source. A singleton still needs the normal protected verdict.
 For a workflow with one required aggregate status, its publisher must report a definitive failure
 on the group commit for lit to see it early. Successful rounds log the duration and each recorded
