@@ -415,6 +415,17 @@ def cached_units(
         )
         for n in failed
     }
+    # Files that passed but saved no record, and why: the next run cannot reuse them.
+    unrecorded = {
+        n: dict(
+            incomplete=u["incomplete"],
+            unknown=(u.get("unknown") or [])[:10],
+            rewritten=(u.get("rewritten") or [])[:10],
+            unresolved=(u.get("unresolved") or [])[:10],
+        )
+        for n, u in sorted(ran.items())
+        if u["exit_code"] == 0 and u["incomplete"]
+    }
     ledger = directory / "ledger.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with ledger.open("a", encoding="utf8") as f:
@@ -424,6 +435,7 @@ def cached_units(
         row,
         reusable=predicted,
         failed_reads=failed_reads,
+        unrecorded=unrecorded,
         decisions={n: d for n, d in decisions.items() if not d["reuse"]},
     )
 

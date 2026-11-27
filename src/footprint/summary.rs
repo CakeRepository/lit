@@ -49,7 +49,7 @@ pub fn summarize(
         BTreeSet::new(),
         BTreeSet::new(),
     );
-    let mut changed = false;
+    let mut changed = BTreeSet::new();
     let mut touched: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (path, write) in &e.first {
         if let Some(rel) = relative(path, root) {
@@ -82,7 +82,9 @@ pub fn summarize(
                         listings.insert(rel.to_owned(), work.listing(rel)?.into());
                     }
                 } else if entry.mode == "untracked" {
-                    changed |= e.written.contains(path);
+                    if e.written.contains(path) {
+                        changed.insert(rel.to_owned());
+                    }
                     untracked.insert(
                         rel.into(),
                         Value::String(workspace::digest(&workspace::path(path)?)),
@@ -139,7 +141,10 @@ pub fn summarize(
             !unknown.is_empty(),
             "read checkout paths that existed before neither the run nor the commit",
         ),
-        (changed, "modified untracked files after reading them"),
+        (
+            !changed.is_empty(),
+            "modified untracked files after reading them",
+        ),
         (!e.unresolved.is_empty(), "could not resolve relative paths"),
         (e.uring, "used io_uring, whose file reads strace cannot see"),
     ];
@@ -153,6 +158,7 @@ pub fn summarize(
         ("absent", sorted(absent, usize::MAX)),
         ("untracked", Value::Object(untracked)),
         ("unknown", sorted(unknown, 50)),
+        ("rewritten", sorted(changed, 50)),
         ("shared_state", sorted(shared, 50)),
         ("reads_git_metadata", Value::Bool(!metadata.is_empty())),
         ("git_metadata", sorted(metadata, 50)),

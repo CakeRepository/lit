@@ -751,6 +751,34 @@ class FootprintRecordingCLI(unittest.TestCase):
             self.assertEqual(bad.returncode, 2)
             self.assertIn("invalid choice: 'jest'", bad.stderr)
 
+    def test_a_passing_file_that_saves_no_record_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            (repo / "kept.test").write_text("kept")
+            (repo / "leaky.test").write_text("leaky")
+            (repo / "worker").write_text('cat "$1" > /dev/null\n[ "$1" = kept.test ] || { cat built.txt > /dev/null; echo again >> built.txt; }\n')
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "two tests")
+            (repo / "built.txt").write_text("left by an earlier step")
+            argv = ["cached-units", "--workdir", "repo", "--store", "store", "--job", "tests",
+                    "--each", "sh worker {}", "--discover", "*.test", "--mode", "enforce",
+                    "--ignore-env", "*", "--audit-rate", "0", "--receipt", "receipt.json"]
+            env = {"LC_ALL": "C"}
+            if os.environ.get("LIT_BIN"):
+                pair = lit(root, env, "parity", *argv)
+                self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+            proc = lit(root, dict(env, LIT_PYTHON=str(root / "unavailable")), *argv)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            receipt = json.loads((root / "receipt.json").read_text())
+            self.assertEqual(receipt["failed"], [])
+            self.assertEqual(sorted(receipt["unrecorded"]), ["leaky.test"])
+            self.assertEqual(receipt["unrecorded"]["leaky.test"]["incomplete"],
+                             ["modified untracked files after reading them"])
+            self.assertEqual(receipt["unrecorded"]["leaky.test"]["rewritten"], ["built.txt"])
+
     def test_job_cache_shadow_enforce_audit_and_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             outer = Path(tmp)
