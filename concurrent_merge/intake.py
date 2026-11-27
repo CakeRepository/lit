@@ -251,6 +251,7 @@ class Intake:
             "refs/heads/lit/parallel/" + self.branch,
             "refs/heads/lit/ready/*",
             "refs/heads/lit/rejected/*",
+            "refs/heads/lit/prior-rejections/*",
         )
         return {ref: oid for oid, ref in (line.split() for line in output.splitlines())}
 
@@ -291,6 +292,7 @@ class Intake:
     def register(self, numbers):
         refs, edits = self.refs(), []
         admitted = 0
+        archived = set()
         for n, (pr, _) in pull_many(self.repository, numbers).items():
             head = pr["headRefOid"] if pr else ""
             reason = eligibility(self.repository, self.branch, pr, head, self.context)
@@ -302,6 +304,15 @@ class Intake:
                 print(f"#{n} failed checks alone at {head[:12]}; waiting for a new push", flush=True)
                 continue
             if held:
+                base = refs[self.target]
+                self.fetch_commits([base, held])
+                reachable = self.repo.run("merge-base", "--is-ancestor", held, base, check=False)
+                if reachable.returncode not in (0, 1):
+                    reachable.check_returncode()
+                history = "refs/heads/lit/prior-rejections/" + held
+                if reachable.returncode and history not in refs and held not in archived:
+                    edits.append((history, "", held))
+                    archived.add(held)
                 edits.append((reject_ref(n), held, ""))
             admitted += 1
             ref = pin_ref(n)
@@ -348,7 +359,7 @@ class Intake:
                 )
         return record
 
-    def claim(self, refs, base, tip, remaining=(), red=None, fresh=False, isolating=False, guard=()):
+    def claim(self, refs, base, tip, remaining=(), red=None, fresh=False, isolating=False, isolated_sibling=False, guard=()):
         self.fetch_commits([refs[self.target]])
         members = manifest(self.repo, batch_name(base, tip), tip, refs[self.target])
         green = verify_sources(self.repository, self.branch, members, self.context)
@@ -367,6 +378,8 @@ class Intake:
             record["fresh"] = True
         if isolating:
             record["isolating"] = True
+        if isolated_sibling:
+            record["isolated_sibling"] = True
         # A single source is a one-member batch too: its batch PR runs the full suites on the exact
         # tree the queue will build, and the queue group reuses that run while main has not moved.
         # (A record marked "individual" by an older coordinator still advances on the original PR.)
@@ -730,6 +743,8 @@ class Intake:
             print(f"Landed batch {short} directly with {len(members)} source PRs.", flush=True)
             self.finish(refs, lock, landed, members)
             return True
+        if record.get("isolated_sibling") and self.repo.out("rev-parse", tip + "^{tree}") != self.repo.out("rev-parse", members[0][1] + "^{tree}"):
+            return self.queue_instead(lock, record, "isolated source requires its exact combined tree")
         if target != base:
             return self.queue_instead(lock, record, f"{self.branch} moved since the batch was built")
         try:
@@ -982,27 +997,51 @@ class Intake:
                 time.sleep(2**attempt)
 
     def start_parallel(self, refs, lock, record, parallel):
-        suspects = [member for group in [record["members"], *record["remaining"]] for member in group]
-        excluded = {n for n, _ in suspects}
-        blocked = {h for _, h in suspects} | {h for r,h in refs.items() if r.startswith("refs/heads/lit/rejected/")}
-        fresh = []
+        groups = record["remaining"]
+        active = {n for n, _ in record["members"]}
+        suspects = [member for group in [record["members"], *groups] for member in group]
+        held = {n for n, _ in suspects}
         base = refs[self.target]
-        for ref, head in refs.items():
-            match = re.fullmatch(r"refs/heads/lit/ready/([1-9]\d*)", ref)
-            if not match or int(match[1]) in excluded:
+        roots = {h for r, h in refs.items() if r.startswith(("refs/heads/lit/rejected/", "refs/heads/lit/prior-rejections/"))}
+        roots.update(h for _, h in suspects)
+        self.fetch_commits([base, *sorted(roots)])
+        ancestry = {h: set(self.repo.out("rev-list", h, "^" + base).splitlines()) for h in roots}
+        rejected = set().union(*(ancestry[h] for r, h in refs.items()
+                                 if r.startswith(("refs/heads/lit/rejected/", "refs/heads/lit/prior-rejections/"))))
+        pins = sorted((int(m[1]), h) for r, h in refs.items()
+                      if (m := re.fullmatch(r"refs/heads/lit/ready/([1-9]\d*)", r)))
+        candidates = [m for m in pins if m[0] not in held] + [m for group in groups for m in group]
+        base = refs[self.target]
+        for n, head in candidates:
+            if refs.get(pin_ref(n)) != head or n in active:
                 continue
             self.fetch_commits([base, head])
-            if blocked.isdisjoint(self.repo.out("rev-list", head, "^" + base).splitlines()):
-                fresh.append((int(match[1]), head))
-        prepared = self.assemble(refs, sorted(fresh), 1) if fresh else None
-        if not prepared:
-            return False
-        primary, self.active = self.active, parallel
+            commits = set(self.repo.out("rev-list", head, "^" + base).splitlines())
+            if not commits.isdisjoint(rejected) or any(not commits.isdisjoint(ancestry[oid]) for other, oid in suspects if other != n):
+                continue
+            prepared = self.assemble(refs, [(n, head)], 1)
+            if not prepared:
+                continue
+            remaining = [[m for m in group if tuple(m) != (n, head)] for group in groups]
+            updated = dict(record, remaining=[g for g in remaining if g])
+            primary, self.active = self.active, parallel
+            try:
+                self.claim(refs, *prepared, isolated_sibling=n in held, guard=[(primary, lock, self.record(updated, lock))])
+            finally:
+                self.active = primary
+            return True
+        return False
+
+    def advance_parallel(self, refs, parallel, lock):
+        record = self.state(lock)
+        if len(record["members"]) != 1 or record["remaining"]:
+            raise Ineligible("Invalid parallel singleton record")
+        primary, limit = self.active, self.max_batch
+        self.active, self.max_batch = parallel, 1
         try:
-            self.claim(refs, *prepared, guard=[(primary, lock, self.record(record, lock))])
+            return self.advance(refs, lock, record)
         finally:
-            self.active = primary
-        return True
+            self.active, self.max_batch = primary, limit
 
     def _drain(self, wait=True):
         # With wait=False this returns where it would sleep; the next call resumes from the refs.
@@ -1015,18 +1054,12 @@ class Intake:
             if companion and self.original_prs_only:
                 raise Ineligible("A parallel wrapper is active. Withdraw its admission before submitting originals.")
             if companion:
-                candidate = self.state(companion)
-                if len(candidate["members"]) != 1 or candidate["remaining"]:
-                    raise Ineligible("Invalid parallel singleton record")
-                primary, limit = self.active, self.max_batch
-                self.active, self.max_batch = parallel, 1
                 try:
-                    advanced = self.advance(refs, companion, candidate)
-                finally:
-                    self.active, self.max_batch = primary, limit
-                if advanced:
-                    continue
-                if "tip" not in record:
+                    if self.advance_parallel(refs, parallel, companion):
+                        continue
+                except (ValueError, KeyError, RuntimeError, OSError, subprocess.SubprocessError) as why:
+                    print(f"Parallel lane held: {why}", flush=True)
+                if "tip" not in record and not record.get("remaining"):
                     if not wait:
                         return
                     time.sleep(2)
@@ -1053,15 +1086,19 @@ class Intake:
                 continue
             if "tip" in record:
                 if not self.advance(refs, lock, record):
-                    if not companion and record.get("isolating") and self.start_parallel(refs, lock, record, parallel):
-                        continue
+                    if not companion and record.get("isolating"):
+                        try:
+                            if self.start_parallel(refs, lock, record, parallel):
+                                continue
+                        except Ineligible as why:
+                            print(f"Parallel lane held: {why}", flush=True)
                     if not wait:
                         print(f"Batch {record['tip'][:12]} is still being checked; the next pass resumes.", flush=True)
                         return
                     time.sleep(30)
                 continue
             groups = record.get("remaining", [])
-            if groups and not record.get("after_fresh"):
+            if not companion and groups and not record.get("after_fresh"):
                 # Alternate: a ready PR that never failed goes before the next suspect group.
                 suspects = {n for group in groups for n, _ in group}
                 fresh = [

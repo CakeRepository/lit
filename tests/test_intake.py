@@ -585,11 +585,12 @@ class RejectionTests(unittest.TestCase):
 
     def register(self, refs, heads):
         api = Intake("owner/repo", "main", "trusted", Mock())
+        api.repo.run.return_value.returncode = 1  # The previous rejected head is still outside main.
         module = Intake.__module__
         prs = {n: (dict(headRefOid=head), None) for n, head in heads.items()}
         out = []
         with (
-            patch.object(api, "refs", return_value=refs),
+            patch.object(api, "refs", return_value={api.target: "a" * 40, **refs}),
             patch(module + ".pull_many", return_value=prs),
             patch(module + ".eligibility", return_value=None),
             patch.object(api, "fetch_commits") as fetch,
@@ -613,9 +614,10 @@ class RejectionTests(unittest.TestCase):
         new = "d" * 40
         push, fetch, out = self.register({"refs/heads/lit/rejected/1": self.HEAD}, {1: new})
         push.assert_called_once_with(
-            [("refs/heads/lit/rejected/1", self.HEAD, ""), ("refs/heads/lit/ready/1", "", new)]
+            [(f"refs/heads/lit/prior-rejections/{self.HEAD}", "", self.HEAD),
+             ("refs/heads/lit/rejected/1", self.HEAD, ""), ("refs/heads/lit/ready/1", "", new)]
         )
-        self.assertEqual(list(fetch.call_args.args[0]), [new])
+        self.assertEqual(list(fetch.call_args.args[0]), [self.HEAD, new])
         self.assertEqual(out, [])
 
 

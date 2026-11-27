@@ -53,6 +53,7 @@ impl Intake<'_> {
                 &format!("refs/heads/lit/parallel/{}", self.src.branch),
                 "refs/heads/lit/ready/*",
                 "refs/heads/lit/rejected/*",
+                "refs/heads/lit/prior-rejections/*",
             ],
             None,
         )?;
@@ -180,6 +181,7 @@ impl Intake<'_> {
         let sources = self.src.pull_many(numbers)?;
         let mut edits = Vec::new();
         let mut admitted = 0;
+        let mut archived = BTreeSet::new();
         let mut seen = BTreeSet::new();
         for n in numbers.iter().filter(|n| seen.insert(**n)) {
             let pr = &sources[n].0;
@@ -197,6 +199,15 @@ impl Intake<'_> {
                 continue;
             }
             if let Some(old) = held {
+                let base = refs.get(&self.target).ok_or("Missing target branch")?;
+                self.fetch([base.as_str(), old.as_str()])?;
+                let history = format!("refs/heads/lit/prior-rejections/{old}");
+                if !self.repo.ancestor(old, base)?
+                    && !refs.contains_key(&history)
+                    && archived.insert(old.clone())
+                {
+                    edits.push((history, String::new(), old.clone()));
+                }
                 edits.push((rejected(*n), old.clone(), String::new()));
             }
             admitted += 1;

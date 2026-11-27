@@ -74,6 +74,20 @@ impl Intake<'_> {
             self.finish(refs, lock, &landed, m, remaining.to_vec())?;
             return Ok(Some(true));
         }
+        if row.get("isolated_sibling").is_some_and(Value::truthy)
+            && self
+                .repo
+                .text(&["rev-parse", &format!("{tip}^{{tree}}")], None)?
+                != self
+                    .repo
+                    .text(&["rev-parse", &format!("{}^{{tree}}", m[0].1)], None)?
+        {
+            return self.queue_instead(
+                lock,
+                row,
+                "isolated source requires its exact combined tree".into(),
+            );
+        }
         if target != base {
             return self.queue_instead(
                 lock,
