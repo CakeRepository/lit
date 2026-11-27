@@ -269,9 +269,14 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    *Limits:* this trusts the signer's runner to have run what it says.
    Keep `--audit-rate` or the audit book so a share of what proofs cover
    still reruns.
-4. **Test by component.** In `run`, split the collected PRs into Frontier
-   components and test each one's `needs` on its own tested ref, rather than
-   one batch for everything. A blocked component no longer holds back the
+4. **Test by component** (`lit run --components`). Split the collected PRs into Frontier
+   components. Each component gets a separate normal receipt and tested ref, based on
+   the same pinned main. Stacked heads and conflicting writers stay together. Use
+   the same trusted full validation command as ordinary `run`. For traced suites,
+   use `lit cached-units --mode enforce` with a complete discovery pattern and
+   absolute store path in that command. It rechecks certificates, new tests and
+   runner inputs in the actual checkout. The advisory list of needs alone cannot
+   authorize a landing. A blocked component no longer holds back the
    others.
    *Tests:* two independent PRs give two tested refs, and a failure in one
    leaves the other's receipt landable.

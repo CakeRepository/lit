@@ -8,7 +8,8 @@ use crate::json::{self, object, Value};
 use crate::merge::{self, Engine, Owners};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+mod components;
 use std::process::Command;
 use std::time::SystemTime;
 
@@ -303,7 +304,7 @@ fn execute(argv: &[String]) -> Result<i32> {
             options.push(arg.clone());
         }
     }
-    let args = Args::parse(
+    let args = Args::with_options(
         &options,
         &[
             "--repo",
@@ -312,9 +313,10 @@ fn execute(argv: &[String]) -> Result<i32> {
             "--shadow-store",
             "--shadow-job",
             "--shadow-proofs",
-            "--shadow-discover",
             "--shadow-strip",
         ],
+        &["--components"],
+        &["--shadow-discover"],
     )
     .map_err(argument_error)?;
     let job_count = args
@@ -370,12 +372,6 @@ fn execute(argv: &[String]) -> Result<i32> {
     };
     let base = snapshot.field("base")?.string()?;
     let changes = changes::ordered(&repo, base, snapshot.field("changes")?.array()?)?;
-    let runs = state.join("runs");
-    fs::create_dir_all(&runs).map_err(|e| e.to_string())?;
-    let directory = private_dir("batch-")
-        .tempdir_in(runs)
-        .map_err(|e| e.to_string())?
-        .keep();
     let stamp = match std::env::var("SOURCE_DATE_EPOCH")
         .ok()
         .filter(|s| !s.is_empty())
@@ -386,15 +382,57 @@ fn execute(argv: &[String]) -> Result<i32> {
             .map_err(|e| e.to_string())?
             .as_secs() as i64,
     };
+    if args.has("--components") {
+        let options = crate::footprint::shadow::Options {
+            store: Path::new(args.required("--shadow-store")?),
+            job: args.required("--shadow-job")?,
+            proofs: args.optional("--shadow-proofs").map(Path::new),
+            discover: args.all("--shadow-discover").to_vec(),
+            strip: args.optional("--shadow-strip").unwrap_or(""),
+        };
+        let plan = crate::footprint::shadow::report(&repo, &snapshot, &options, None, None)?;
+        let groups = components::groups(&changes, plan.field("decision")?)?;
+        let mut complete = true;
+        for group in groups {
+            let members = group.iter().map(|c| c.number).collect();
+            let part = components::subset(&snapshot, &members)?;
+            let (receipt, all) = test_batch(&repo, state, &part, &group, jobs, stamp, &test)?;
+            println!("{}", receipt.display());
+            complete &= all;
+        }
+        return Ok(i32::from(!complete));
+    }
+    let (receipt, all) = test_batch(&repo, state, &snapshot, &changes, jobs, stamp, &test)?;
+    shadow(&repo, snapshot_path, &args, receipt.parent().unwrap())?;
+    println!("{}", receipt.display());
+    Ok(i32::from(!all))
+}
+
+fn test_batch(
+    repo: &Repo,
+    state: &Path,
+    snapshot: &Value,
+    changes: &[Change],
+    jobs: usize,
+    stamp: i64,
+    test: &[String],
+) -> Result<(PathBuf, bool)> {
+    let base = snapshot.field("base")?.string()?;
+    let runs = state.join("runs");
+    fs::create_dir_all(&runs).map_err(|e| e.to_string())?;
+    let directory = private_dir("batch-")
+        .tempdir_in(runs)
+        .map_err(|e| e.to_string())?
+        .keep();
     let mut batch = Batch {
         engine: Engine {
-            repo: &repo,
+            repo,
             state,
             jobs,
             hinted: BTreeSet::new(),
         },
         directory: &directory,
-        test: &test,
+        test,
         stamp,
         tip: base.into(),
         accepted: BTreeSet::new(),
@@ -402,7 +440,7 @@ fn execute(argv: &[String]) -> Result<i32> {
         owners: BTreeMap::new(),
         history: Vec::new(),
     };
-    let tested = batch.attempt(&changes);
+    let tested = batch.attempt(changes);
     merge::write_json(
         &directory.join("attempts.json"),
         &Value::Array(batch.history),
@@ -423,7 +461,7 @@ fn execute(argv: &[String]) -> Result<i32> {
         )?;
     }
     let result = object([
-        ("snapshot", snapshot),
+        ("snapshot", snapshot.clone()),
         ("final", Value::String(batch.tip)),
         ("tested", numbers(&batch.accepted)),
         (
@@ -432,12 +470,10 @@ fn execute(argv: &[String]) -> Result<i32> {
         ),
     ]);
     merge::write_json(&directory.join("result.json"), &result)?;
-    shadow(&repo, snapshot_path, &args, &directory)?;
-    println!(
-        "{}",
-        Repo::new(&directory)?.path().join("result.json").display()
-    );
-    Ok(i32::from(batch.accepted.len() != changes.len()))
+    Ok((
+        Repo::new(&directory)?.path().join("result.json"),
+        batch.accepted.len() == changes.len(),
+    ))
 }
 
 pub fn command(argv: &[String]) -> i32 {

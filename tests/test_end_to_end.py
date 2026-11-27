@@ -164,6 +164,27 @@ class EndToEnd(unittest.TestCase):
         self.addCleanup(self.s.close)
         self.s.open_all()
 
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "native component runner")
+    def test_component_failure_leaves_a_separate_landable_receipt(self):
+        s = self.s
+        s.collect(1, 4, 8)
+        proc = s.lit("run", "queue.json", "--repo", "batch.git", "--state", "state",
+                     "--components", "--shadow-store", "store", "--shadow-job", "suite", *TEST, ok=(1,))
+        receipts = [Path(line) for line in proc.stdout.splitlines()]
+        results = [(path, json.loads(path.read_text())) for path in receipts]
+        healthy = next((p, r) for p, r in results if r["tested"] == [1])
+        self.assertEqual(healthy[1]["snapshot"]["base"], s.base)
+        self.assertEqual(healthy[1]["snapshot"]["selection"]["prs"], [1])
+        self.assertTrue(any(4 in [c["number"] for c in r["snapshot"]["changes"]] and
+                            4 not in r["tested"] for _, r in results))
+        self.assertTrue(any(8 in r["tested"] for _, r in results))
+        for path, result in results:
+            if result["tested"]:
+                self.assertEqual(git(s.root / "batch.git", "rev-parse",
+                                     "refs/concurrent-merge/tested/" + path.parent.name), result["final"])
+        s.lit("land", str(healthy[0]), "--repo", "batch.git")
+        self.assertEqual(s.remote_main(), healthy[1]["final"])
+
     def test_lands_what_passes_together_and_hands_back_the_rest(self):
         s = self.s
         with patch.dict(s.env, LIT_PYTHON=str(s.root / "no-python")):
