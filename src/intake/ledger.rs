@@ -50,8 +50,10 @@ impl Intake<'_> {
                 &self.url,
                 &self.target,
                 &self.active,
+                &format!("refs/heads/lit/parallel/{}", self.src.branch),
                 "refs/heads/lit/ready/*",
                 "refs/heads/lit/rejected/*",
+                "refs/heads/lit/prior-rejections/*",
             ],
             None,
         )?;
@@ -174,6 +176,18 @@ impl Intake<'_> {
         }
         Ok(record)
     }
+    fn retain_rejection(&self, refs: &Refs, edits: &mut Vec<Edit>, old: &str) -> Result<()> {
+        let history = format!("refs/heads/lit/prior-rejections/{old}");
+        if refs.contains_key(&history) || edits.iter().any(|(r, _, _)| r == &history) {
+            return Ok(());
+        }
+        let base = refs.get(&self.target).ok_or("Missing target branch")?;
+        self.fetch([base.as_str(), old])?;
+        if !self.repo.ancestor(old, base)? {
+            edits.push((history, String::new(), old.into()));
+        }
+        Ok(())
+    }
     pub(super) fn register(&self, numbers: &[u64]) -> Result<()> {
         let refs = self.refs()?;
         let sources = self.src.pull_many(numbers)?;
@@ -196,6 +210,7 @@ impl Intake<'_> {
                 continue;
             }
             if let Some(old) = held {
+                self.retain_rejection(&refs, &mut edits, old)?;
                 edits.push((rejected(*n), old.clone(), String::new()));
             }
             admitted += 1;
@@ -326,15 +341,15 @@ impl Intake<'_> {
         }
         Ok(None)
     }
-    pub(super) fn claim(
+    pub(super) fn claim_edits(
         &self,
         refs: &Refs,
         base: &str,
         tip: &str,
         remaining: Vec<Value>,
         red: Option<&Value>,
-        fresh: bool,
-    ) -> Result<()> {
+        round: Option<&str>,
+    ) -> Result<Vec<Edit>> {
         let target = refs.get(&self.target).ok_or("Missing target branch")?;
         self.fetch([target.as_str()])?;
         let name = batch_name(base, tip);
@@ -351,12 +366,11 @@ impl Intake<'_> {
         if let Some(red) = red.filter(|r| r.truthy()) {
             row = with(&row, "red", red.clone())?;
         }
-        if fresh {
-            // Never-failed PRs went first; the next round takes the first suspect group.
-            row = with(&row, "fresh", Value::Bool(true))?;
+        if let Some(kind) = round {
+            row = with(&row, kind, Value::Bool(true))?;
         }
         let next = self.record(&row, tip)?;
-        self.push(vec![
+        Ok(vec![
             (
                 self.active.clone(),
                 refs.get(&self.active).cloned().unwrap_or_default(),
@@ -434,18 +448,17 @@ impl Intake<'_> {
             .filter(|(n, h)| refs.get(&pin(*n)) == Some(h))
             .map(|(n, h)| (pin(*n), h.clone(), String::new()))
             .collect();
-        edits.extend(
-            reject
-                .iter()
-                .filter(|(n, h)| refs.get(&rejected(*n)) != Some(h))
-                .map(|(n, h)| {
-                    (
-                        rejected(*n),
-                        refs.get(&rejected(*n)).cloned().unwrap_or_default(),
-                        h.clone(),
-                    )
-                }),
-        );
+        for (n, head) in reject {
+            let key = rejected(*n);
+            let old = refs.get(&key);
+            if old == Some(head) {
+                continue;
+            }
+            if let Some(old) = old {
+                self.retain_rejection(refs, &mut edits, old)?;
+            }
+            edits.push((key, old.cloned().unwrap_or_default(), head.clone()));
+        }
         let red = record.get("red").filter(|v| v.truthy());
         let next = if !pending.is_empty()
             || (red.is_some() && self.limit == Limit::Auto && !self.originals)

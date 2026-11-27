@@ -551,6 +551,115 @@ impl Intake<'_> {
         }
         unreachable!()
     }
+    fn start_parallel(
+        &mut self,
+        refs: &Refs,
+        lock: &str,
+        row: &Value,
+        parallel: &str,
+    ) -> Result<bool> {
+        let active = members(row.field("members")?)?;
+        let groups = span(row, "remaining")?
+            .iter()
+            .map(members)
+            .collect::<Result<Vec<_>>>()?;
+        let suspects: Vec<_> = active.iter().chain(groups.iter().flatten()).collect();
+        let held: BTreeSet<_> = suspects.iter().map(|m| m.0).collect();
+        let base = refs.get(&self.target).ok_or("Missing target branch")?;
+        let rejected_heads: BTreeSet<_> = refs
+            .iter()
+            .filter(|(r, _)| {
+                r.starts_with("refs/heads/lit/rejected/")
+                    || r.starts_with("refs/heads/lit/prior-rejections/")
+            })
+            .map(|(_, h)| h.as_str())
+            .collect();
+        let roots: BTreeSet<_> = rejected_heads
+            .iter()
+            .copied()
+            .chain(suspects.iter().map(|m| m.1.as_str()))
+            .collect();
+        self.fetch(std::iter::once(base.as_str()).chain(roots.iter().copied()))?;
+        let mut ancestry = BTreeMap::new();
+        let mut rejected = BTreeSet::new();
+        for head in roots {
+            let history: BTreeSet<String> = self
+                .repo
+                .text(&["rev-list", head, &format!("^{base}")], None)?
+                .lines()
+                .map(String::from)
+                .collect();
+            if rejected_heads.contains(head) {
+                rejected.extend(history.iter().cloned());
+            }
+            ancestry.insert(head, history);
+        }
+        let pins = Self::pins(refs);
+        // Try never-failed heads first, then an untested member of a waiting split.
+        let candidates = pins
+            .iter()
+            .filter(|m| !held.contains(&m.0))
+            .chain(groups.iter().flatten());
+        for member in candidates {
+            let (n, head) = member;
+            if refs.get(&pin(*n)) != Some(head) || active.iter().any(|m| m.0 == *n) {
+                continue;
+            }
+            self.fetch([base.as_str(), head.as_str()])?;
+            let commits = self
+                .repo
+                .text(&["rev-list", head, &format!("^{base}")], None)?;
+            let commits: BTreeSet<String> = commits.lines().map(String::from).collect();
+            if !commits.is_disjoint(&rejected)
+                || suspects
+                    .iter()
+                    .any(|m| m.0 != *n && !commits.is_disjoint(&ancestry[m.1.as_str()]))
+            {
+                continue;
+            }
+            let Some((base, tip)) =
+                self.assemble(refs, Some(std::slice::from_ref(member)), Some(1))?
+            else {
+                continue;
+            };
+            let primary = std::mem::replace(&mut self.active, parallel.to_owned());
+            let kind = held.contains(n).then_some("isolated_sibling");
+            let claimed = self.claim_edits(refs, &base, &tip, vec![], None, kind);
+            self.active = primary;
+            let mut edits = claimed?;
+            let remaining = groups
+                .iter()
+                .filter_map(|g| {
+                    let rest: Vec<_> = g.iter().filter(|m| *m != member).cloned().collect();
+                    (!rest.is_empty()).then(|| rows(&rest))
+                })
+                .collect();
+            let updated = with(row, "remaining", Value::Array(remaining))?;
+            // Transfer ownership from the waiting split and reserve the companion atomically.
+            edits.push((
+                self.active.clone(),
+                lock.into(),
+                self.record(&updated, lock)?,
+            ));
+            self.push(edits)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    fn advance_parallel(&mut self, refs: &Refs, parallel: &str, lock: &str) -> Result<bool> {
+        let candidate = self.state(lock)?;
+        if members(candidate.field("members")?)?.len() != 1
+            || !span(&candidate, "remaining")?.is_empty()
+        {
+            return Err(hold("Invalid parallel singleton record"));
+        }
+        let primary = std::mem::replace(&mut self.active, parallel.to_owned());
+        let limit = std::mem::replace(&mut self.limit, Limit::Fixed(1));
+        let result = self.advance(refs, lock, &candidate);
+        self.limit = limit;
+        self.active = primary;
+        result
+    }
     fn pass(&mut self, wait: bool) -> Result<()> {
         loop {
             let refs = self.refs()?;
@@ -561,6 +670,30 @@ impl Intake<'_> {
                 self.state(lock)?
             };
             let tip = string(&row, "tip");
+            let parallel = format!("refs/heads/lit/parallel/{}", self.src.branch);
+            let companion = refs.get(&parallel);
+            if self.originals && companion.is_some() {
+                return Err(hold("A parallel wrapper is active. Withdraw its admission before submitting originals."));
+            }
+            if let Some(other) = companion {
+                match self.advance_parallel(&refs, &parallel, other) {
+                    Ok(true) => continue,
+                    Ok(false) => (),
+                    Err(e) => {
+                        println!("Parallel lane held: {e}");
+                        if wait && tip.is_none() && span(&row, "remaining")?.is_empty() {
+                            return Err(e);
+                        }
+                    }
+                }
+                if tip.is_none() && span(&row, "remaining")?.is_empty() {
+                    if !wait {
+                        return Ok(());
+                    }
+                    pause(2);
+                    continue;
+                }
+            }
             if self.originals && tip.is_some() && !row.get("individual").is_some_and(Value::truthy)
             {
                 return Err(hold("An older wrapper is active. Withdraw its admission before submitting originals."));
@@ -579,6 +712,19 @@ impl Intake<'_> {
                 }
             } else if let Some(tip) = tip {
                 if !self.advance(&refs, lock, &row)? {
+                    if companion.is_none()
+                        && row.get("isolating").is_some_and(Value::truthy)
+                        && match self.start_parallel(&refs, lock, &row, &parallel) {
+                            Ok(progress) => progress,
+                            Err(Error::Hold(why)) => {
+                                println!("Parallel lane held: {why}");
+                                false
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    {
+                        continue;
+                    }
                     if !wait {
                         println!(
                             "Batch {} is still being checked; the next pass resumes.",
@@ -592,7 +738,10 @@ impl Intake<'_> {
                 let all = span(&row, "remaining")?;
                 let first = all.first().map(members).transpose()?;
                 let rest: Vec<Value> = all.iter().skip(1).cloned().collect();
-                if first.is_some() && !row.get("after_fresh").is_some_and(Value::truthy) {
+                if companion.is_none()
+                    && first.is_some()
+                    && !row.get("after_fresh").is_some_and(Value::truthy)
+                {
                     // Alternate: a ready PR that never failed goes before the next suspect group.
                     let mut suspects = BTreeSet::new();
                     for g in &all {
@@ -605,7 +754,14 @@ impl Intake<'_> {
                     if !fresh.is_empty() {
                         let limit = split::limit(self.limit, row.get("red"))?;
                         if let Some((base, tip)) = self.assemble(&refs, Some(&fresh), limit)? {
-                            self.claim(&refs, &base, &tip, all, row.get("red"), true)?;
+                            self.push(self.claim_edits(
+                                &refs,
+                                &base,
+                                &tip,
+                                all,
+                                row.get("red"),
+                                Some("fresh"),
+                            )?)?;
                             continue;
                         }
                     }
@@ -616,7 +772,8 @@ impl Intake<'_> {
                     split::limit(self.limit, row.get("red"))?
                 };
                 if let Some((base, tip)) = self.assemble(&refs, first.as_deref(), limit)? {
-                    self.claim(&refs, &base, &tip, rest, row.get("red"), false)?;
+                    let kind = first.as_ref().map(|_| "isolating");
+                    self.push(self.claim_edits(&refs, &base, &tip, rest, row.get("red"), kind)?)?;
                 } else if first.is_some() {
                     self.finish(&refs, lock, &row, &[], rest)?;
                 } else {

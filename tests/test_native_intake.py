@@ -121,17 +121,19 @@ class IntakeCLI(unittest.TestCase):
         self.assertEqual(git(remote, "rev-parse", "refs/heads/" + self.branch), self.tip)
         self.assertEqual(git(self.remote, "for-each-ref", "--format=%(refname)", "refs/heads/lit"), "")
 
-    def lock(self, record, parent=None):
+    def lock(self, record, parent=None, ref="refs/heads/lit/active/main"):
         parent = parent or self.tip
         tree = git(self.remote, "rev-parse", parent + "^{tree}")
         lock = git(self.remote, "commit-tree", tree, "-p", parent, "-m", json.dumps(record))
-        git(self.remote, "update-ref", "refs/heads/lit/active/main", lock)
+        git(self.remote, "update-ref", ref, lock)
 
     def refs(self, side, prefix):
         return git(side / "intake-remote.git", "for-each-ref", "--format=%(refname) %(objectname)", prefix)
 
     def test_a_closing_batch_swaps_the_rejected_pin_for_a_rejection_at_the_same_head(self):
         git(self.remote, "update-ref", "refs/heads/" + self.branch, self.tip)
+        prior = self.extra_pr(3)[1]
+        git(self.remote, "update-ref", "refs/heads/lit/rejected/1", prior)
         for n, head in self.members:
             git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
         # Source 1 failed alone; source 2 only rode along and is returned healthy.
@@ -143,7 +145,10 @@ class IntakeCLI(unittest.TestCase):
         ]))))
         self.rules.append(dict(method="PATCH", path=f"/repos/{REPO}/pulls/77", reply={}))
         side = self.parity("drain", "--no-wait")
-        self.assertEqual(self.refs(side, "refs/heads/lit"), f"refs/heads/lit/rejected/1 {self.members[0][1]}")
+        self.assertEqual(self.refs(side, "refs/heads/lit").splitlines(), [
+            f"refs/heads/lit/prior-rejections/{prior} {prior}",
+            f"refs/heads/lit/rejected/1 {self.members[0][1]}",
+        ])
 
     def test_tick_holds_out_a_rejected_head_batches_the_rest_and_readmits_after_a_new_push(self):
         (first, head1), (second, head2) = self.members
@@ -181,7 +186,8 @@ class IntakeCLI(unittest.TestCase):
 
     def test_a_pushed_head_replaces_the_stale_rejection_and_is_pinned(self):
         (first, head1), _ = self.members
-        git(self.remote, "update-ref", f"refs/heads/lit/rejected/{first}", self.base)
+        previous = self.members[1][1]
+        git(self.remote, "update-ref", f"refs/heads/lit/rejected/{first}", previous)
         self.get("issues?state=open&labels=lit-ready&sort=created&direction=asc&per_page=100&page=1",
                  [dict(number=first, pull_request={})])
         self.pulls([first])
@@ -189,8 +195,7 @@ class IntakeCLI(unittest.TestCase):
         self.gql("enqueuePullRequest", dict(enqueuePullRequest={}), dict(pr="pr1", head=head1))
         side = self.parity("--original-prs-only", "tick")
         self.assertEqual(self.refs(side, "refs/heads/lit/rejected"), "")
-        # The new head was admitted: the original-PR path pinned it and submitted it, leaving no refs behind.
-        self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+        self.assertEqual(self.refs(side, "refs/heads/lit"), f"refs/heads/lit/prior-rejections/{previous} {previous}")
 
     def test_originals_and_exact_head_withdrawal(self):
         for n, head in self.members:
@@ -284,10 +289,12 @@ class IntakeCLI(unittest.TestCase):
         self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.tip)
         self.assertEqual(self.refs(side, "refs/heads/lit"), "")
 
-    def extra_pr(self, n):
+    def extra_pr(self, n, parent=None):
         work = self.root / f"work{n}"
         git(self.root, "clone", "-q", str(self.remote), str(work))
-        git(work, "checkout", "-q", "-B", f"pr-{n}", self.base)
+        if parent:
+            git(work, "fetch", "-q", "origin", parent)
+        git(work, "checkout", "-q", "-B", f"pr-{n}", parent or self.base)
         (work / f"feature-{n}").write_text(str(n))
         git(work, "add", ".")
         git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", f"topic {n}")
@@ -324,6 +331,74 @@ class IntakeCLI(unittest.TestCase):
         side = self.parity("--max-batch", "1", "--direct-context", "full", "drain", "--no-wait")
         self.assertEqual(self.landed_order(side), ["1", "2"])
         self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+
+    def test_a_healthy_singleton_lands_while_the_suspect_wrapper_is_still_checking(self):
+        self.parallel_singleton(False)
+
+    def test_a_member_of_the_failed_batch_lands_while_its_sibling_is_still_checking(self):
+        self.parallel_singleton(True)
+
+    def parallel_singleton(self, sibling):
+        self.pinned_batch()
+        parent = self.members[0][1]
+        if sibling:
+            middle = self.extra_pr(6)[1]
+            rejected = self.extra_pr(7, middle)[1]
+            git(self.remote, "update-ref", f"refs/heads/lit/prior-rejections/{rejected}", rejected)
+            parent = middle
+        stacked = self.extra_pr(3, parent)
+        fresh = self.extra_pr(4)
+        self.lock(dict(base=self.base, tip=self.tip, members=self.members,
+                       remaining=[[fresh]] if sibling else [], started=WHEN,
+                       direct="no full status", isolating=True))
+        for n, head in (stacked, fresh):
+            git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
+            self.full_suite(n)
+        self.prs[77]["isInMergeQueue"] = True
+        self.pulls([1, 2])
+        self.pulls([4])
+        self.pulls([77])
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=77, state="OPEN", headRefOid=self.tip, isCrossRepository=False, url="fixture")
+        ]))))
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        self.assertEqual(self.landed_order(side), ["4"])
+        record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
+        self.assertEqual(record["tip"], self.tip)
+        self.assertEqual(record["remaining"], [])
+        self.assertEqual(self.refs(side, "refs/heads/lit/parallel"), "")
+        self.assertEqual(len(self.refs(side, "refs/heads/lit/ready").splitlines()), 3)
+
+    def test_an_unverifiable_companion_does_not_block_a_reserved_primary_group(self):
+        self.failed_pair([])
+        self.lock(dict(members=[], remaining=[]), parent=self.base, ref="refs/heads/lit/parallel/main")
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        self.assertEqual(self.landed_order(side), ["1", "2"])
+        self.assertTrue(self.refs(side, "refs/heads/lit/parallel"))
+
+    def test_an_isolated_sibling_with_a_changed_tree_waits_for_protected_validation(self):
+        member, (_, base) = self.members
+        git(self.remote, "update-ref", "refs/heads/main", base)
+        git(self.remote, "update-ref", "refs/heads/lit/ready/1", member[1])
+        self.full_suite(1)
+        repo = Repo(self.remote)
+        snapshot = dict(base=base, changes=[dict(number=1, head=member[1], author="dev")])
+        with patch.dict(os.environ, SOURCE_DATE_EPOCH=EPOCH):
+            tip, _ = Engine(repo, self.root / "sibling").batch(base, verified_changes(repo, snapshot), lambda _: "model")
+        self.lock(dict(base=base, tip=tip, members=[member], remaining=[], started=WHEN, isolated_sibling=True),
+                  parent=tip, ref="refs/heads/lit/parallel/main")
+        self.prs[78] = dict(self.pr(78, tip), isInMergeQueue=True)
+        self.pulls([1])
+        self.pulls([78])
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=78, state="OPEN", headRefOid=tip, isCrossRepository=False, url="fixture")
+        ]))))
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/parallel/main"))
+        self.assertEqual(record["direct"], "isolated source requires its exact combined tree")
+        self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), base)
 
     def test_a_pr_without_the_full_suite_sends_the_batch_through_the_queue(self):
         self.pinned_batch()
