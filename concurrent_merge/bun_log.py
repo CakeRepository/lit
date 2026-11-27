@@ -1,16 +1,19 @@
 """Score a plan of skippable test files against a real `bun test` run.
 
 Outside a terminal, bun prints a file's path, then a colon, only before that
-file's failures, so the files named that way are the ones that failed. A plan
-from `cached-units --mode plan` lists the files lit would have skipped; any of
-them that failed in the real run is an unsound skip.
+file's failures, so the files named that way are the ones that failed. Under
+GitHub Actions it prints every file's path that way, as a log group
+("::group::path:" ... "::endgroup::"), so a file counts as failed only when a
+failure line follows its path. A plan from `cached-units --mode plan` lists
+the files lit would have skipped; any of them that failed in the real run is an
+unsound skip.
 """
 
 import json
 from pathlib import Path
 import re
 
-HEADER = re.compile(r"^(\S[^\s:]*\.[cm]?[jt]sx?):$")
+HEADER = re.compile(r"^(?:::group::)?(\S[^\s:]*\.[cm]?[jt]sx?):$")
 FAILED = ("(fail)", "# Unhandled error", "error: ")
 
 
@@ -20,6 +23,8 @@ def failed_files(text):
         match = HEADER.match(line)
         if match:
             current = match.group(1).removeprefix("./")
+        elif line == "::endgroup::":
+            current = None
         elif current and line.startswith(FAILED):
             failed.add(current)
     return failed

@@ -240,6 +240,13 @@ class BunLogTests(unittest.TestCase):
                     seconds_predicted_reusable=1.0, first_reasons={})
         self.assertEqual(score(plan, [f.name])["unsound"], ["src/two.test.ts"])
 
+    def test_under_github_actions_only_files_with_a_failure_in_their_group_failed(self):
+        from concurrent_merge.bun_log import failed_files
+
+        log = "::group::src/one.test.ts:\n(pass) x [1ms]\n::endgroup::\n(fail) stray [1ms]\n" \
+              "::group::src/two.test.ts:\n(fail) y [1ms]\n::endgroup::\n\nRan 2 tests across 2 files. [5.00ms]\n"
+        self.assertEqual(failed_files(log), {"src/two.test.ts"})
+
 
 class ShardTests(unittest.TestCase):
     def test_shards_cover_every_name_once_and_balance_seconds(self):

@@ -723,7 +723,7 @@ class FootprintRecordingCLI(unittest.TestCase):
             (repo / "worker").write_text("cat \"$1\" > /dev/null\n")
             (repo / "batch").write_text(textwrap.dedent("""\
                 for f in "$@"; do cat "$f" > /dev/null; done
-                printf './b.test.ts:\\n(fail) flaky [1ms]\\n\\n Ran 3 tests across 3 files. [2ms]\\n' | sed 's/^ //'
+                printf '::group::./a.test.ts:\\n(pass) fine [1ms]\\n::endgroup::\\n(fail) outside a group [1ms]\\n::group::./b.test.ts:\\n(fail) flaky [1ms]\\n::endgroup::\\n\\n Ran 3 tests across 3 files. [2ms]\\n' | sed 's/^ //'
                 exit 1
                 """))
             git(repo, "add", ".")
