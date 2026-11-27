@@ -180,13 +180,6 @@ or real Git landings.
 
 ## Still open
 
-- **Frontier decisions on real candidates.** `concurrent-merge land` already
-  lands by compare-and-swap: its push carries the tested base as the value
-  main must still hold (`cli.publish`, tested against a local remote in
-  `tests/test_landing.py`), so a batch tested on a main that moved never
-  lands. What is open is feeding Frontier's certificates and components into
-  `collect`, `run` and `land`, without weakening required checks or
-  approvals.
 - **Flakes on real Git.** The simulator shows that a flaky unit should be
   rerun once before anything is blamed. Real `run` never reruns a failure: it
   remembers a failed candidate as failed, and blame sends a change back on
@@ -279,12 +272,12 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    leaves the other's receipt landable.
    *Limits:* overlaps still run on the combined tree, and required checks
    still run on what lands.
-5. **Land components in turn.** Land each component with `cli.publish` (the
-   compare-and-swap on the tested base). After a lost race, recheck `needs`
-   on the new main. A component whose cone doesn't read what landed lands
-   without rerunning.
-   *Tests:* against a local remote, a race costs a recheck, not a rerun, when
-   cones are disjoint.
+5. **Land components in turn** with `lit land RECEIPT --repo BARE --recheck COMMAND ...`.
+   Supply the same trusted validation command as `run`. If main advanced, lit rebuilds
+   just the original passing members on the new base, verifies them, re-reads their
+   eligibility, then pushes with a fresh lease. It permits one recheck. A full suite
+   runs again, while a complete `cached-units` command can reuse unchanged inputs.
+   With no recheck option, a stale receipt still stops.
    *Limits:* each landing is one push, so very high rates need step 4's
    components to be large enough to amortize it.
 6. **Bridges on refs** (`lit stage`). In a dedicated bare repository, promotion

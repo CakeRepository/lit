@@ -372,16 +372,7 @@ fn execute(argv: &[String]) -> Result<i32> {
     };
     let base = snapshot.field("base")?.string()?;
     let changes = changes::ordered(&repo, base, snapshot.field("changes")?.array()?)?;
-    let stamp = match std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        Some(s) => s.parse().map_err(|_| "Invalid SOURCE_DATE_EPOCH")?,
-        None => SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_secs() as i64,
-    };
+    let stamp = timestamp()?;
     if args.has("--components") {
         let options = crate::footprint::shadow::Options {
             store: Path::new(args.required("--shadow-store")?),
@@ -406,6 +397,51 @@ fn execute(argv: &[String]) -> Result<i32> {
     shadow(&repo, snapshot_path, &args, receipt.parent().unwrap())?;
     println!("{}", receipt.display());
     Ok(i32::from(!all))
+}
+
+fn timestamp() -> Result<i64> {
+    Ok(
+        match std::env::var("SOURCE_DATE_EPOCH")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => s.parse().map_err(|_| "Invalid SOURCE_DATE_EPOCH")?,
+            None => SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_secs() as i64,
+        },
+    )
+}
+
+pub(crate) fn recheck(
+    repo: &Repo,
+    receipt: &Path,
+    live: &Value,
+    members: &BTreeSet<u64>,
+    command: &[String],
+) -> Result<PathBuf> {
+    let receipt = receipt.canonicalize().map_err(|e| e.to_string())?;
+    let runs = receipt
+        .parent()
+        .and_then(Path::parent)
+        .filter(|p| p.ends_with("runs"))
+        .ok_or("Expected a receipt in the run state directory")?;
+    let state = runs.parent().ok_or("Missing run state directory")?;
+    let snapshot = components::subset(live, members)?;
+    let changes = changes::ordered(
+        repo,
+        snapshot.field("base")?.string()?,
+        snapshot.field("changes")?.array()?,
+    )?;
+    let (path, all) = test_batch(repo, state, &snapshot, &changes, 1, timestamp()?, command)?;
+    if !all || changes.len() != members.len() {
+        return Err(format!(
+            "Component did not pass on the new base; see {}",
+            path.display()
+        ));
+    }
+    Ok(path)
 }
 
 fn test_batch(
