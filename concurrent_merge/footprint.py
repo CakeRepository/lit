@@ -584,6 +584,8 @@ def summarize(events, checkout, entries, ignore_env, env, listed=None, produced=
         absent=sorted(absent),
         untracked=dict(sorted(untracked.items())),
         unknown=sorted(unknown)[:50],
+        # Untracked files the run read and then wrote, which make it incomplete.
+        rewritten=sorted(changed)[:50],
         # Written by an earlier unit, for example a bytecode or transpiler cache.
         shared_state=sorted(shared)[:50],
         git_metadata=sorted(git_metadata)[:50],

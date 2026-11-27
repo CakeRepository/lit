@@ -409,8 +409,24 @@ fn execute(config: &Settings) -> Result<Value> {
     let mut unsound = Vec::new();
     let mut reads = Map::new();
     let mut ran_seconds = Seconds::default();
+    let mut unrecorded = Map::new();
     for (name, u) in &ran {
         ran_seconds.add(u.get("seconds").filter(|s| s.truthy()))?;
+        if u.field("exit_code")? == &0u64.into() && u.field("incomplete")?.truthy() {
+            let first = |key| match u.get(key) {
+                Some(Value::Array(items)) => Value::Array(items.iter().take(10).cloned().collect()),
+                _ => Value::Array(vec![]),
+            };
+            unrecorded.insert(
+                name.clone(),
+                object([
+                    ("incomplete", u.field("incomplete")?.clone()),
+                    ("unknown", first("unknown")),
+                    ("rewritten", first("rewritten")),
+                    ("unresolved", first("unresolved")),
+                ]),
+            );
+        }
         if u.field("exit_code")? != &0u64.into() {
             failed.push(name.clone());
             if decisions[name].reuse() {
@@ -530,6 +546,8 @@ fn execute(config: &Settings) -> Result<Value> {
     };
     result.insert("reusable".into(), names(predicted));
     result.insert("failed_reads".into(), Value::Object(reads));
+    // Files that passed but saved no record, and why: the next run cannot reuse them.
+    result.insert("unrecorded".into(), Value::Object(unrecorded));
     result.insert(
         "decisions".into(),
         Value::Object(
