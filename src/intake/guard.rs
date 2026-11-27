@@ -34,6 +34,84 @@ impl Sources<'_> {
             .ok_or("GitHub could not verify intake state")?;
         Ok(data)
     }
+    /// Only split on GitHub's required checks for this PR and this queue entry. A retry
+    /// with the same name still running (or green) makes the older failure inconclusive.
+    pub(super) fn failed_queue_check(
+        &self,
+        n: u64,
+        tip: &str,
+        group: &str,
+    ) -> Result<Option<String>> {
+        let mut after = Value::Null;
+        let mut cursors = BTreeSet::new();
+        let mut checks = BTreeMap::new();
+        loop {
+            let data = self.query(
+                include_str!("queue-checks.graphql"),
+                with(&self.vars(n), "after", after)?,
+            )?;
+            let pr = data.field("repository")?.field("pullRequest")?;
+            let Some(entry) = pr.get("mergeQueueEntry") else {
+                return Ok(None);
+            };
+            let Some(commit) = entry.get("headCommit") else {
+                return Ok(None);
+            };
+            if string(pr, "headRefOid") != Some(tip)
+                || string(commit, "oid") != Some(group)
+                || entry.get("position").and_then(|p| p.number().ok()) != Some(1)
+            {
+                return Ok(None);
+            }
+            let Some(contexts) = commit
+                .get("statusCheckRollup")
+                .and_then(|s| s.get("contexts"))
+            else {
+                return Ok(None);
+            };
+            for row in contexts.field("nodes")?.array()? {
+                if row.get("isRequired") != Some(&Value::Bool(true)) {
+                    continue;
+                }
+                let (name, red) = if let Some(name) = string(row, "name") {
+                    (
+                        name,
+                        string(row, "status") == Some("COMPLETED")
+                            && string(row, "conclusion") == Some("FAILURE")
+                            && row
+                                .get("checkSuite")
+                                .and_then(|s| s.get("app"))
+                                .and_then(|a| string(a, "slug"))
+                                == Some("github-actions"),
+                    )
+                } else if let Some(name) = string(row, "context") {
+                    (
+                        name,
+                        string(row, "state") == Some("FAILURE")
+                            && row.get("creator").and_then(|a| string(a, "login"))
+                                == Some("github-actions"),
+                    )
+                } else {
+                    continue;
+                };
+                *checks.entry(name.to_owned()).or_insert(true) &= red;
+            }
+            let page = contexts.field("pageInfo")?;
+            if !page.field("hasNextPage")?.boolean()? {
+                break;
+            }
+            let cursor = page.field("endCursor")?.string()?;
+            if !cursors.insert(cursor.to_owned()) {
+                return Err("Repeated queue check cursor".into());
+            }
+            after = cursor.into();
+        }
+        Ok(checks
+            .into_iter()
+            .find(|(_, red)| *red)
+            .map(|(name, _)| name))
+    }
+
     pub fn vars(&self, n: u64) -> Value {
         let (o, r) = self.repository.split_once('/').unwrap();
         object([("o", o.into()), ("r", r.into()), ("n", n.into())])

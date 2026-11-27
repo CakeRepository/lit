@@ -460,7 +460,13 @@ class IntakeCLI(unittest.TestCase):
         record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
         self.assertEqual(record["refused"], "main refused lit's push: protected branch")
 
+    def test_a_failed_required_job_splits_a_still_queued_batch_with_both_pins_intact(self):
+        self.failed_batch(early=True)
+
     def test_a_failed_batch_returns_the_implicated_source_and_rechecks_the_other(self):
+        self.failed_batch(early=False)
+
+    def failed_batch(self, early):
         from zipfile import ZipFile, ZIP_DEFLATED
         first = git(self.remote, "rev-parse", self.tip + "^1")
         git(self.remote, "update-ref", "refs/heads/" + self.branch, self.tip)
@@ -470,7 +476,17 @@ class IntakeCLI(unittest.TestCase):
         tree = git(self.remote, "rev-parse", self.tip + "^{tree}")
         lock = git(self.remote, "commit-tree", tree, "-p", self.tip, "-m", json.dumps(record))
         git(self.remote, "update-ref", "refs/heads/lit/active/main", lock)
-        self.prs[77]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0]["state"] = "FAILURE"
+        if early:
+            group = dict(oid=self.tip)
+            self.prs[77].update(isInMergeQueue=True, mergeQueueEntry=dict(position=1, state="AWAITING_CHECKS", headCommit=group))
+            checks = [dict(name="required", status="COMPLETED", conclusion="FAILURE", isRequired=True,
+                           checkSuite=dict(app=dict(slug="github-actions"))),
+                      dict(name="slow sibling", status="IN_PROGRESS", isRequired=True)]
+            observed = dict(oid=self.tip, statusCheckRollup=dict(contexts=dict(nodes=checks, pageInfo=dict(hasNextPage=False))))
+            self.gql("LitQueueChecks", dict(repository=dict(pullRequest=dict(headRefOid=self.tip,
+                     mergeQueueEntry=dict(position=1, headCommit=observed)))))
+        else:
+            self.prs[77]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0]["state"] = "FAILURE"
         self.prs[78] = self.pr(78, first)
         self.prs[78]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0]["state"] = "PENDING"
         self.pulls([1, 2])
@@ -495,6 +511,13 @@ class IntakeCLI(unittest.TestCase):
         side = self.parity("--max-batch", "auto", "drain", "--no-wait")
         remote = side / "intake-remote.git"
         next_batch = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
+        if early:
+            self.assertEqual(next_batch["members"], [self.members[0]])
+            self.assertEqual(next_batch["remaining"], [[self.members[1]]])
+            self.assertEqual(len(self.refs(side, "refs/heads/lit/ready").splitlines()), 2)
+            self.assertEqual(self.refs(side, "refs/heads/lit/rejected"), "")
+            self.assertEqual(git(remote, "rev-parse", "main"), self.base)
+            return
         self.assertEqual(next_batch["red"], [1.0, 1.0])
         self.assertEqual(next_batch["members"], [self.members[0]])
         self.assertEqual(next_batch["tip"], first)

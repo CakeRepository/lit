@@ -37,7 +37,7 @@ pub(super) fn limit(limit: Limit, red: Option<&Value>) -> Result<Option<usize>> 
     })
 }
 type Split = (Vec<Member>, Vec<Value>, String);
-fn halves(m: &[Member], mut rest: Vec<Value>, why: String) -> Split {
+pub(super) fn halves(m: &[Member], mut rest: Vec<Value>, why: String) -> Split {
     let (a, b) = m.split_at(m.len() / 2);
     let mut groups = vec![rows(a), rows(b)];
     groups.append(&mut rest);

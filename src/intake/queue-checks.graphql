@@ -1,0 +1,10 @@
+query LitQueueChecks($o:String!,$r:String!,$n:Int!,$after:String){
+  repository(owner:$o,name:$r){pullRequest(number:$n){headRefOid
+    mergeQueueEntry{position headCommit{oid statusCheckRollup{
+      contexts(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{
+        ... on CheckRun{name isRequired(pullRequestNumber:$n) status conclusion checkSuite{app{slug}}}
+        ... on StatusContext{context isRequired(pullRequestNumber:$n) state creator{login}}
+      }}
+    }}}
+  }}
+}

@@ -19,6 +19,34 @@ from concurrent_merge.intake_guard import (
 
 
 class IntakeTests(unittest.TestCase):
+    def test_a_retry_optional_job_or_replaced_group_cannot_trigger_an_early_split(self):
+        from concurrent_merge.intake_guard import failed_queue_check
+        red = dict(name="suite", isRequired=True, status="COMPLETED", conclusion="FAILURE",
+                   checkSuite=dict(app=dict(slug="github-actions")))
+        def page(oid, nodes, after=None):
+            contexts = dict(nodes=nodes, pageInfo=dict(hasNextPage=bool(after), endCursor=after))
+            entry = dict(position=1, headCommit=dict(oid=oid, statusCheckRollup=dict(contexts=contexts)))
+            return dict(repository=dict(pullRequest=dict(headRefOid="tip", mergeQueueEntry=entry)))
+        for second, expected in [
+            (page("group", [dict(red, status="IN_PROGRESS")]), None),
+            (page("replacement", [red]), None),
+            (page("group", [dict(red, name="optional", isRequired=False)]), "suite"),
+        ]:
+            with patch("concurrent_merge.intake_guard.graphql", side_effect=[page("group", [red], "next"), second]):
+                self.assertEqual(failed_queue_check("o/r", 3, "tip", "group"), expected)
+        with patch("concurrent_merge.intake_guard.graphql", return_value=page("group", [
+            dict(red, isRequired=False), dict(red, checkSuite=dict(app=dict(slug="other")))])):
+            self.assertIsNone(failed_queue_check("o/r", 3, "tip", "group"))
+
+    def test_round_log_measures_each_source_from_its_own_green_time(self):
+        from concurrent_merge.intake import log_round
+        row = dict(started="2026-11-26T12:03:00Z", source_green_at={"1": "2026-11-26T12:01:00Z",
+                                                                   "2": "2026-11-26T12:02:00Z"})
+        with patch("builtins.print") as output:
+            log_round(row, "2026-11-26T12:04:00Z", True)
+        self.assertEqual([c.args[0] for c in output.call_args_list],
+                         ["Round duration: 60s", "Source #1 checks-to-main: 180s", "Source #2 checks-to-main: 120s"])
+
     def test_only_a_conversion_to_draft_holds_a_new_batch(self):
         api = Intake("owner/repo", "main", "trusted", Mock())
         record = dict(tip="head", members=[[1, "source"]])

@@ -79,6 +79,23 @@ fn date(s: &str) -> Result<jiff::Timestamp> {
 fn seconds(start: &str, end: &str) -> Result<i64> {
     Ok(((date(end)?.as_nanosecond() - date(start)?.as_nanosecond()) / 1_000_000_000) as i64)
 }
+/// Missing timestamps in an older ledger are missing measurements.
+fn log_round(row: &Value, end: Option<&str>, landed: bool) {
+    let Some(end) = end else { return };
+    let elapsed = |start: &str| seconds(start, end).ok().filter(|n| *n >= 0);
+    if let Some(t) = string(row, "started").and_then(elapsed) {
+        println!("Round duration: {t}s");
+    }
+    if landed {
+        if let Some(green) = row.get("source_green_at").and_then(|v| v.object().ok()) {
+            for (pr, stamp) in green {
+                if let Some(t) = stamp.string().ok().and_then(elapsed) {
+                    println!("Source #{pr} checks-to-main: {t}s");
+                }
+            }
+        }
+    }
+}
 fn members(v: &Value) -> Result<Vec<Member>> {
     v.array()?
         .iter()

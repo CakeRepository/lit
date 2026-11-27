@@ -188,6 +188,7 @@ impl Intake<'_> {
             self.change_record(lock, &with(row, "refused", Value::String(why))?)?;
             return Ok(true);
         }
+        log_round(row, now().ok().as_deref(), true);
         let list = m
             .iter()
             .map(|(n, _)| format!("#{n}"))
