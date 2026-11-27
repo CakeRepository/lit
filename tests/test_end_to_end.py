@@ -493,7 +493,7 @@ class SignedProofCLI(unittest.TestCase):
             # identical bytes with compressors that diverge on real ledgers.
             tracked = {f"src/{i}.py": ["100644", hashlib.sha256(str(i).encode()).hexdigest()] for i in range(900)}
             bundle = dict(kind="lit-unit-footprints", commit=commit, tree=tree, tracked=tracked,
-                          units={"tests/cafÃ©": dict(exit_code=0, incomplete=[], tracked=list(tracked), seconds=1.25)})
+                          units={"tests/café": dict(exit_code=0, incomplete=[], tracked=list(tracked), seconds=1.25)})
             (units / "pass.json").write_text(json.dumps(bundle), encoding="utf8")
             (units / "stale.json").write_text(json.dumps(dict(bundle, commit="b"*40)), encoding="utf8")
 
@@ -533,7 +533,7 @@ class SignedProofCLI(unittest.TestCase):
             self.assertEqual(sig.read_bytes(), signed)
             self.assertIn("Took 1 tests files", command("take", "--remote", "origin", *common, "--quorum", "2", "--into", "verified"))
             index = json.loads((work / "verified/tests/proof-signers.json").read_text())
-            self.assertEqual(index, {"tests/cafÃ©": ["one", "two"]})
+            self.assertEqual(index, {"tests/café": ["one", "two"]})
             (work / "reset.json").write_text(json.dumps(dict(kind="lit-audit-book", signers={
                 "one": {"reset": "2099-01-01T00:00:00+00:00"}})))
             command("take", "--remote", "origin", *common, "--quorum", "2", "--audit-book", "reset.json", "--into", "after-reset")
