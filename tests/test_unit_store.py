@@ -115,6 +115,46 @@ class UnitStoreTests(unittest.TestCase):
         self.assertTrue(result["batch"]["traced_after"])
         self.assertEqual(result["exit_code"], 1)
 
+    def bun_batch(self, always_fail=""):
+        # Prints what bun prints outside a terminal: a file's path and a colon only before its failures, then a summary.
+        loop = ('for f; do if "$0" "$f" && [ "$f" != "' + always_fail + '" ]; then :; '
+                'else printf "%s:\\n(fail) t\\n" "$f"; s=1; fi; done; '
+                'printf "Ran %d tests across %d files. [1.00ms]\\n" $# $#; exit ${s:-0}')
+        return ["sh", "-c", loop.replace('"$0"', '"' + sys.executable + '"'), "sh", "{}"]
+
+    def bun_units(self, **kw):
+        if not (self.work / "tests/a.test.ts").exists():
+            self.commit({f"tests/{n}.test.ts": TEST.format(name=n) for n in ("a", "b")})
+        self.marker.write_text("")
+        result = cached_units(
+            self.work, "unit", self.store, [sys.executable, "{}"],
+            discover=["tests/*.test.ts"], log=os.devnull, mode="enforce", **kw,
+        )
+        return result, sorted(self.marker.read_text().split())
+
+    def test_a_failed_bun_batch_traces_only_the_files_bun_names(self):
+        self.commit({"src/a.py": "bad\n"})
+        result, ran = self.bun_units(batch=self.bun_batch(), batch_report="bun")
+        self.assertEqual(ran, ["a", "a", "b"])  # a and b in the batch, then only a traced
+        self.assertEqual(result["failed"], ["tests/a.test.ts"])
+        self.assertIn("src/a.py", result["failed_reads"]["tests/a.test.ts"]["tracked"])
+        self.assertEqual((result["ran"], result["batch"]["traced"], result["exit_code"]), (2, 1, 1))
+
+    def test_a_file_bun_named_that_passes_alone_counts_as_passed(self):
+        result, ran = self.bun_units(batch=self.bun_batch("tests/a.test.ts"), batch_report="bun")
+        self.assertEqual(ran, ["a", "a", "b"])
+        self.assertEqual((result["failed"], result["exit_code"], result["ran"]), ([], 0, 2))
+
+    def test_without_a_bun_summary_or_report_every_file_is_traced(self):
+        self.commit({"src/a.py": "bad\n"})
+        result, ran = self.bun_units(batch=self.batch(), batch_report="bun")  # no summary line
+        self.assertEqual(ran, ["a", "a", "b", "b"])
+        self.assertEqual(result["batch"]["traced"], 2)
+        self.commit({"src/b.py": "ok, changed\n"})  # b's traced pass left a record
+        result, ran = self.bun_units(batch=self.bun_batch())  # no batch_report
+        self.assertEqual(ran, ["a", "a", "b", "b"])
+        self.assertEqual(result["failed"], ["tests/a.test.ts"])
+
     def test_a_merge_of_two_passing_sides_runs_only_what_read_both(self):
         both = """import os, sys
 open(os.environ["LIT_TEST_MARKER"], "a").write("ab\\n")
@@ -199,6 +239,13 @@ class BunLogTests(unittest.TestCase):
         plan = dict(commit="c", units=3, reusable=["src/one.test.ts", "src/two.test.ts"],
                     seconds_predicted_reusable=1.0, first_reasons={})
         self.assertEqual(score(plan, [f.name])["unsound"], ["src/two.test.ts"])
+
+    def test_under_github_actions_only_files_with_a_failure_in_their_group_failed(self):
+        from concurrent_merge.bun_log import failed_files
+
+        log = "::group::src/one.test.ts:\n(pass) x [1ms]\n::endgroup::\n(fail) stray [1ms]\n" \
+              "::group::src/two.test.ts:\n(fail) y [1ms]\n::endgroup::\n\nRan 2 tests across 2 files. [5.00ms]\n"
+        self.assertEqual(failed_files(log), {"src/two.test.ts"})
 
 
 class ShardTests(unittest.TestCase):
