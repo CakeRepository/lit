@@ -1,4 +1,4 @@
-usage: concurrent-merge land [-h] --repo REPO receipt
+usage: concurrent-merge land [-h] --repo REPO receipt [--recheck COMMAND ...]
 
 positional arguments:
   receipt
@@ -6,3 +6,4 @@ positional arguments:
 options:
   -h, --help   show this help message and exit
   --repo REPO
+  --recheck COMMAND ...   On one forward base change, revalidate all members with the original trusted command and a fresh lease.

@@ -89,7 +89,7 @@ pub fn heads(snapshot: &Value) -> Result<BTreeMap<u64, String>, String> {
 pub fn command(args: &[String]) -> i32 {
     if args
         .iter()
-        .take_while(|a| a.as_str() != "--")
+        .take_while(|a| !matches!(a.as_str(), "--" | "--recheck"))
         .any(|s| matches!(s.as_str(), "-h" | "--help"))
     {
         print!("{}", include_str!("help/land.txt"));
@@ -108,55 +108,93 @@ pub fn command(args: &[String]) -> i32 {
 }
 
 fn land(arguments: &[String]) -> Result<String, String> {
-    let (path, git_dir) = inputs(arguments)?;
-    let receipt = Receipt::read(path)?;
+    let split = arguments.iter().position(|arg| arg == "--recheck");
+    let (path, git_dir) = inputs(&arguments[..split.unwrap_or(arguments.len())])?;
+    let mut recheck = split.map(|i| &arguments[i + 1..]);
+    let mut receipt = Receipt::read(path)?;
     let repo = Repo::new(git_dir)?;
     receipt.verify(&repo, path)?;
-    let snap = &receipt.snapshot;
-    let repository = snap.field("repository")?.string()?;
-    let branch = snap.field("branch")?.string()?;
-    let base = snap.field("base")?.string()?;
-    let live = collect::live(
-        &Client::new(),
-        repository,
-        branch,
-        snap.get("selection"),
-        None,
-    )?;
-    let ready = heads(&live)?;
-    if live.field("base")?.string()? != base
-        || receipt
+    if let Some(command) = recheck {
+        let raw = files::read(path)?;
+        let row = json::parse(std::str::from_utf8(&raw).map_err(|e| e.to_string())?)?;
+        let expected = row
+            .field("command")?
+            .array()?
+            .iter()
+            .map(Value::string)
+            .collect::<Result<Vec<_>, _>>()?;
+        if command.is_empty()
+            || !expected
+                .iter()
+                .copied()
+                .eq(command.iter().map(String::as_str))
+        {
+            return Err("Supply the same trusted validation command used by run".into());
+        }
+    }
+    let client = Client::new();
+    let mut push_raced = false;
+    loop {
+        let snap = &receipt.snapshot;
+        let repository = snap.field("repository")?.string()?;
+        let branch = snap.field("branch")?.string()?;
+        let base = snap.field("base")?.string()?;
+        let live = collect::live(&client, repository, branch, snap.get("selection"), None)?;
+        let ready = heads(&live)?;
+        if receipt
             .tested
             .iter()
             .any(|n| ready.get(n) != receipt.heads.get(n))
-    {
-        return Err("Base or queue eligibility changed; collect and test again".into());
-    }
-    let reference = format!("refs/heads/{branch}");
-    repo.text(&["check-ref-format", &reference], None)?;
-    let destination = destination(repository)?;
-    let output = repo.output(
-        &[
-            "push",
-            "--porcelain",
-            &format!("--force-with-lease={reference}:{base}"),
-            &destination,
-            &format!("{}:{reference}", receipt.final_oid),
-        ],
-        None,
-    )?;
-    if !output.status.success() {
+        {
+            return Err("Base or queue eligibility changed; collect and test again".into());
+        }
+        let destination = destination(repository)?;
+        let fresh = live.field("base")?.string()?;
+        if fresh != base {
+            let cmd = recheck
+                .take()
+                .ok_or("Base or queue eligibility changed; collect and test again")?;
+            if !valid_oid(fresh) {
+                return Err("Invalid live base".into());
+            }
+            repo.text(&["fetch", "--no-tags", &destination, fresh], None)?;
+            if !repo.ancestor(base, fresh)? {
+                return Err("Landing branch was rewritten; collect and test again".into());
+            }
+            let updated = crate::run::recheck(&repo, path, &live, &receipt.tested, cmd)?;
+            receipt = Receipt::read(&updated)?;
+            receipt.verify(&repo, &updated)?;
+            continue; // Re-read eligibility after validation, immediately before the next lease.
+        }
+        let reference = format!("refs/heads/{branch}");
+        repo.text(&["check-ref-format", &reference], None)?;
+        let output = repo.output(
+            &[
+                "push",
+                "--porcelain",
+                &format!("--force-with-lease={reference}:{base}"),
+                &destination,
+                &format!("{}:{reference}", receipt.final_oid),
+            ],
+            None,
+        )?;
+        if output.status.success() {
+            return Ok(receipt.final_oid);
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("stale info")
             || String::from_utf8_lossy(&output.stdout).contains("stale info")
         {
+            if recheck.is_some() && !push_raced {
+                push_raced = true;
+                continue;
+            }
             return Err(format!(
                 "{reference} moved since the batch was tested on {base}; collect and test again"
             ));
         }
         return Err(format!("git push: {}", stderr.trim()));
     }
-    Ok(receipt.final_oid)
 }
 
 pub fn destination(repository: &str) -> Result<String, String> {

@@ -23,8 +23,8 @@ measured on synthetic workloads. It tracks issue #9.
 Two indexes answer every question, and no step compares one change against
 another:
 
-- `writer`: key â†’ the one admitted change writing it.
-- `readers`: key â†’ the units with a kept certificate reading it.
+- `writer`: key Ã¢â€ â€™ the one admitted change writing it.
+- `readers`: key Ã¢â€ â€™ the units with a kept certificate reading it.
 
 From them:
 
@@ -125,12 +125,12 @@ Let `|W|` be a change's write count, `R` the most keys one certificate lists,
 | step | cost |
 |---|---|
 | `admit(c)` | `O(|W(c)|)` |
-| `record(u)` | `O(R)`, or `O(KÂ·R)` when it trims |
-| `cone(c)` | `O(Î£ r(k) for k in W(c))` |
-| `touching(u)` | `O(KÂ·R)` |
-| `needs(G)` | `O(|cone(G)| Â· K Â· R)` |
-| `components()` over `n` changes | `O(Î£ |cone(c)| Â· K Â· R + n log n)` |
-| `land(G)` | `O(Î£ |W(c)|)` |
+| `record(u)` | `O(R)`, or `O(KÃ‚Â·R)` when it trims |
+| `cone(c)` | `O(ÃŽÂ£ r(k) for k in W(c))` |
+| `touching(u)` | `O(KÃ‚Â·R)` |
+| `needs(G)` | `O(|cone(G)| Ã‚Â· K Ã‚Â· R)` |
+| `components()` over `n` changes | `O(ÃŽÂ£ |cone(c)| Ã‚Â· K Ã‚Â· R + n log n)` |
+| `land(G)` | `O(ÃŽÂ£ |W(c)|)` |
 
 None of these grows with the number of changes in flight. Only the
 change's own cone and the overlaps it really has count. Hot keys (high `r(k)`)
@@ -144,7 +144,7 @@ or real Git landings.
 
 - `python -m concurrent_merge.frontier_bench N`: admit, prove and land per
   change, with every other change left in flight, plus peak memory. On a map of
-  50,000 units reading 40 of 5,000,000 functions it stays under about 100 Âµs
+  50,000 units reading 40 of 5,000,000 functions it stays under about 100 Ã‚Âµs
   per change all the way to 1,000,000 changes (349,000 in flight at the end),
   and peak memory grows from 756 MB for the map alone to 1,967 MB.
 - `python -m concurrent_merge.frontier_bench grouping N`: `components()` cost
@@ -180,13 +180,6 @@ or real Git landings.
 
 ## Still open
 
-- **Frontier decisions on real candidates.** `concurrent-merge land` already
-  lands by compare-and-swap: its push carries the tested base as the value
-  main must still hold (`cli.publish`, tested against a local remote in
-  `tests/test_landing.py`), so a batch tested on a main that moved never
-  lands. What is open is feeding Frontier's certificates and components into
-  `collect`, `run` and `land`, without weakening required checks or
-  approvals.
 - **Flakes on real Git.** The simulator shows that a flaky unit should be
   rerun once before anything is blamed. Real `run` never reruns a failure: it
   remembers a failed candidate as failed, and blame sends a change back on
@@ -282,12 +275,12 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    leaves the other's receipt landable.
    *Limits:* overlaps still run on the combined tree, and required checks
    still run on what lands.
-5. **Land components in turn.** Land each component with `cli.publish` (the
-   compare-and-swap on the tested base). After a lost race, recheck `needs`
-   on the new main. A component whose cone doesn't read what landed lands
-   without rerunning.
-   *Tests:* against a local remote, a race costs a recheck, not a rerun, when
-   cones are disjoint.
+5. **Land components in turn** with `lit land RECEIPT --repo BARE --recheck COMMAND ...`.
+   Supply the same trusted validation command as `run`. If main advanced, lit rebuilds
+   just the original passing members on the new base, verifies them, re-reads their
+   eligibility, then pushes with a fresh lease. It permits one recheck. A full suite
+   runs again, while a complete `cached-units` command can reuse unchanged inputs.
+   With no recheck option, a stale receipt still stops.
    *Limits:* each landing is one push, so very high rates need step 4's
    components to be large enough to amortize it.
 6. **Bridges on refs.** Keep each stage as a ref (for example
@@ -301,7 +294,7 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
 ## Release bridges
 
 `concurrent_merge/promotion.py` keeps releases apart from integration. Each
-stage (for example Lab â†’ Early Release â†’ Production) points at one snapshot
+stage (for example Lab Ã¢â€ â€™ Early Release Ã¢â€ â€™ Production) points at one snapshot
 of main and moves only by promotion from the stage before it.
 
 - **One artifact.** A snapshot is promoted as it is, never rebuilt, and each

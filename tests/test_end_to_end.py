@@ -232,6 +232,43 @@ class EndToEnd(unittest.TestCase):
         for n in (4, 5, 7):
             self.assertNotIn(s.heads[n], git(s.gh.remote, "rev-list", main))
 
+    @unittest.skipUnless(os.environ.get("LIT_BIN"), "native race recovery")
+    def test_landing_rechecks_every_member_on_the_new_base(self):
+        s = self.s
+        s.collect(1)
+        receipt, _, _ = s.run()
+        git(s.work, "checkout", "-q", "main")
+        s.edit("calc.py", "return a * b", "return 0")
+        git(s.work, "commit", "-qam", "changed dependency")
+        git(s.work, "push", "-q", str(s.gh.remote), "main")
+        before = s.remote_main()
+        args = ["land", str(receipt), "--repo", "batch.git", "--recheck"]
+        self.assertIn("same trusted", s.lit(*args, "true", ok=(2,)).stderr)
+        self.assertIn("did not pass", s.lit(*args, *TEST[1:], ok=(2,)).stderr)
+        self.assertEqual(s.remote_main(), before)
+
+    @unittest.skipUnless(os.environ.get("LIT_BIN") and shutil.which("strace") and not traced(),
+                         "native race recovery with traced units")
+    def test_landing_reuses_a_unit_after_a_disjoint_component_lands(self):
+        s = self.s
+        s.collect(1, 2)
+        result = s.root / "unit-receipt.json"
+        command = [os.environ["LIT_BIN"], "cached-units", "--store", str(s.root / "store"),
+                   "--job", "files", "--discover", "run_tests.py", "--each", "cat {}",
+                   "--mode", "enforce", "--audit-rate", "0", "--ignore-env", "*", "--receipt", str(result)]
+        proc = s.lit("run", "queue.json", "--repo", "batch.git", "--state", "state",
+                     "--components", "--shadow-store", "shadow", "--shadow-job", "files", "--test", *command)
+        first, second = proc.stdout.splitlines()
+        s.lit("land", first, "--repo", "batch.git")
+        winner = s.remote_main()
+        result.unlink()
+        s.lit("land", second, "--repo", "batch.git", "--recheck", *command)
+        checked = json.loads(result.read_text())
+        self.assertEqual((checked["reused"], checked["ran"]), (1, 0))
+        self.assertEqual(git(s.gh.remote, "merge-base", winner, s.remote_main()), winner)
+        for head in (s.heads[1], s.heads[2]):
+            self.assertEqual(git(s.gh.remote, "merge-base", head, s.remote_main()), head)
+
     def test_land_refuses_when_main_moved_after_the_run(self):
         s = self.s
         s.collect(1, 2)
