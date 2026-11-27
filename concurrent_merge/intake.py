@@ -248,6 +248,7 @@ class Intake:
             self.url,
             self.target,
             self.active,
+            "refs/heads/lit/parallel/" + self.branch,
             "refs/heads/lit/ready/*",
             "refs/heads/lit/rejected/*",
         )
@@ -347,7 +348,7 @@ class Intake:
                 )
         return record
 
-    def claim(self, refs, base, tip, remaining=(), red=None, fresh=False):
+    def claim(self, refs, base, tip, remaining=(), red=None, fresh=False, isolating=False, guard=()):
         self.fetch_commits([refs[self.target]])
         members = manifest(self.repo, batch_name(base, tip), tip, refs[self.target])
         green = verify_sources(self.repository, self.branch, members, self.context)
@@ -364,12 +365,14 @@ class Intake:
         if fresh:
             # Never-failed PRs went first; the next round takes the first suspect group.
             record["fresh"] = True
+        if isolating:
+            record["isolating"] = True
         # A single source is a one-member batch too: its batch PR runs the full suites on the exact
         # tree the queue will build, and the queue group reuses that run while main has not moved.
         # (A record marked "individual" by an older coordinator still advances on the original PR.)
         branches = [("refs/heads/" + batch_name(base, tip), "", tip)]
         lock = self.record(record, tip)
-        self.push([(self.active, refs.get(self.active, ""), lock), *branches])
+        self.push([(self.active, refs.get(self.active, ""), lock), *branches, *guard])
         return lock, record
 
     def assemble(self, refs, selected=None, limit=None):
@@ -978,12 +981,56 @@ class Intake:
                 )
                 time.sleep(2**attempt)
 
+    def start_parallel(self, refs, lock, record, parallel):
+        suspects = [member for group in [record["members"], *record["remaining"]] for member in group]
+        excluded = {n for n, _ in suspects}
+        blocked = {h for _, h in suspects} | {h for r,h in refs.items() if r.startswith("refs/heads/lit/rejected/")}
+        fresh = []
+        base = refs[self.target]
+        for ref, head in refs.items():
+            match = re.fullmatch(r"refs/heads/lit/ready/([1-9]\d*)", ref)
+            if not match or int(match[1]) in excluded:
+                continue
+            self.fetch_commits([base, head])
+            if blocked.isdisjoint(self.repo.out("rev-list", head, "^" + base).splitlines()):
+                fresh.append((int(match[1]), head))
+        prepared = self.assemble(refs, sorted(fresh), 1) if fresh else None
+        if not prepared:
+            return False
+        primary, self.active = self.active, parallel
+        try:
+            self.claim(refs, *prepared, guard=[(primary, lock, self.record(record, lock))])
+        finally:
+            self.active = primary
+        return True
+
     def _drain(self, wait=True):
         # With wait=False this returns where it would sleep; the next call resumes from the refs.
         while True:
             refs = self.refs()
             lock = refs.get(self.active, "")
             record = self.state(lock) if lock else {}
+            parallel = "refs/heads/lit/parallel/" + self.branch
+            companion = refs.get(parallel)
+            if companion and self.original_prs_only:
+                raise Ineligible("A parallel wrapper is active. Withdraw its admission before submitting originals.")
+            if companion:
+                candidate = self.state(companion)
+                if len(candidate["members"]) != 1 or candidate["remaining"]:
+                    raise Ineligible("Invalid parallel singleton record")
+                primary, limit = self.active, self.max_batch
+                self.active, self.max_batch = parallel, 1
+                try:
+                    advanced = self.advance(refs, companion, candidate)
+                finally:
+                    self.active, self.max_batch = primary, limit
+                if advanced:
+                    continue
+                if "tip" not in record:
+                    if not wait:
+                        return
+                    time.sleep(2)
+                    continue
             if (
                 self.original_prs_only
                 and "tip" in record
@@ -1006,6 +1053,8 @@ class Intake:
                 continue
             if "tip" in record:
                 if not self.advance(refs, lock, record):
+                    if not companion and record.get("isolating") and self.start_parallel(refs, lock, record, parallel):
+                        continue
                     if not wait:
                         print(f"Batch {record['tip'][:12]} is still being checked; the next pass resumes.", flush=True)
                         return
@@ -1033,7 +1082,7 @@ class Intake:
             else:
                 prepared = self.assemble(refs, None, batch_limit(self.max_batch, record))
             if prepared:
-                self.claim(refs, *prepared, remaining=groups[1:], red=record.get("red"))
+                self.claim(refs, *prepared, remaining=groups[1:], red=record.get("red"), isolating=bool(groups))
             elif groups:
                 self.finish(refs, lock, record, pending=groups[1:])
             else:

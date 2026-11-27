@@ -50,6 +50,7 @@ impl Intake<'_> {
                 &self.url,
                 &self.target,
                 &self.active,
+                &format!("refs/heads/lit/parallel/{}", self.src.branch),
                 "refs/heads/lit/ready/*",
                 "refs/heads/lit/rejected/*",
             ],
@@ -326,15 +327,15 @@ impl Intake<'_> {
         }
         Ok(None)
     }
-    pub(super) fn claim(
+    pub(super) fn claim_edits(
         &self,
         refs: &Refs,
         base: &str,
         tip: &str,
         remaining: Vec<Value>,
         red: Option<&Value>,
-        fresh: bool,
-    ) -> Result<()> {
+        round: Option<&str>,
+    ) -> Result<Vec<Edit>> {
         let target = refs.get(&self.target).ok_or("Missing target branch")?;
         self.fetch([target.as_str()])?;
         let name = batch_name(base, tip);
@@ -351,12 +352,11 @@ impl Intake<'_> {
         if let Some(red) = red.filter(|r| r.truthy()) {
             row = with(&row, "red", red.clone())?;
         }
-        if fresh {
-            // Never-failed PRs went first; the next round takes the first suspect group.
-            row = with(&row, "fresh", Value::Bool(true))?;
+        if let Some(kind) = round {
+            row = with(&row, kind, Value::Bool(true))?;
         }
         let next = self.record(&row, tip)?;
-        self.push(vec![
+        Ok(vec![
             (
                 self.active.clone(),
                 refs.get(&self.active).cloned().unwrap_or_default(),

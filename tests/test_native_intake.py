@@ -284,10 +284,12 @@ class IntakeCLI(unittest.TestCase):
         self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.tip)
         self.assertEqual(self.refs(side, "refs/heads/lit"), "")
 
-    def extra_pr(self, n):
+    def extra_pr(self, n, parent=None):
         work = self.root / f"work{n}"
         git(self.root, "clone", "-q", str(self.remote), str(work))
-        git(work, "checkout", "-q", "-B", f"pr-{n}", self.base)
+        if parent:
+            git(work, "fetch", "-q", "origin", parent)
+        git(work, "checkout", "-q", "-B", f"pr-{n}", parent or self.base)
         (work / f"feature-{n}").write_text(str(n))
         git(work, "add", ".")
         git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", f"topic {n}")
@@ -324,6 +326,29 @@ class IntakeCLI(unittest.TestCase):
         side = self.parity("--max-batch", "1", "--direct-context", "full", "drain", "--no-wait")
         self.assertEqual(self.landed_order(side), ["1", "2"])
         self.assertEqual(self.refs(side, "refs/heads/lit"), "")
+
+    def test_a_healthy_singleton_lands_while_the_suspect_wrapper_is_still_checking(self):
+        self.pinned_batch()
+        self.lock(dict(base=self.base, tip=self.tip, members=self.members, remaining=[], started=WHEN,
+                       direct="no full status", isolating=True))
+        stacked = self.extra_pr(3, self.members[0][1])
+        fresh = self.extra_pr(4)
+        for n, head in (stacked, fresh):
+            git(self.remote, "update-ref", f"refs/heads/lit/ready/{n}", head)
+            self.full_suite(n)
+        self.prs[77]["isInMergeQueue"] = True
+        self.pulls([1, 2])
+        self.pulls([4])
+        self.pulls([77])
+        self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
+            dict(number=77, state="OPEN", headRefOid=self.tip, isCrossRepository=False, url="fixture")
+        ]))))
+        side = self.parity("--direct-context", "full", "drain", "--no-wait")
+        remote = side / "intake-remote.git"
+        self.assertEqual(self.landed_order(side), ["4"])
+        self.assertEqual(json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))["tip"], self.tip)
+        self.assertEqual(self.refs(side, "refs/heads/lit/parallel"), "")
+        self.assertEqual(len(self.refs(side, "refs/heads/lit/ready").splitlines()), 3)
 
     def test_a_pr_without_the_full_suite_sends_the_batch_through_the_queue(self):
         self.pinned_batch()
