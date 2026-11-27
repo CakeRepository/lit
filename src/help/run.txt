@@ -13,6 +13,9 @@ options:
   -h, --help            show this help message and exit
   --jobs JOBS           Concurrent Git and structural comparison workers on
                         this runner (default: up to 8)
+  --components          Test independent Frontier components against the same base and
+                        print one normal receipt per component. Requires a shadow
+                        store and job. The test command validates each candidate.
   --shadow-store SHADOW_STORE
                         Also write shadow.json: what Frontier would have
                         decided from this unit store (advisory, changes
