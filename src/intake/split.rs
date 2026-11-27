@@ -161,13 +161,19 @@ fn receipts(client: &Client, repository: &str, run: &str) -> Result<Map> {
 /// Ids of the completed runs of batch `n`'s newest merge group, oldest first. A batch that
 /// fails in the merge queue keeps its fast PR status, and the run behind that status never
 /// ran the full suites, so the receipts of the failing tests are only among these runs.
-pub(super) fn queue_runs(rows: &[Value], branch: &str, n: u64) -> Vec<String> {
+pub(super) fn queue_runs(rows: &[Value], branch: &str, n: u64, group: Option<&str>) -> Vec<String> {
     let prefix = format!("gh-readonly-queue/{branch}/pr-{n}-");
     let done: Vec<(&str, u64, &str)> = rows
         .iter()
         .filter(|r| {
             string(r, "head_branch").is_some_and(|b| b.starts_with(&prefix))
-                && string(r, "status") == Some("completed")
+                && match group {
+                    Some(sha) => {
+                        string(r, "head_sha") == Some(sha)
+                            && r.get("run_attempt").and_then(|v| v.number().ok()) == Some(1)
+                    }
+                    None => string(r, "status") == Some("completed"),
+                }
         })
         .filter_map(|r| {
             Some((
@@ -195,6 +201,7 @@ impl Intake<'_> {
         row: &Value,
         m: &[Member],
         trusted: Option<&Value>,
+        group: Option<&str>,
         remaining: Vec<Value>,
     ) -> Result<Split> {
         let measured = (|| -> Result<(Map, BTreeMap<String, Vec<String>>)> {
@@ -236,10 +243,10 @@ impl Intake<'_> {
                 .and_then(|l| {
                     l.get("workflow_runs")
                         .and_then(|w| w.array().ok())
-                        .map(|w| queue_runs(w, self.src.branch, n))
+                        .map(|w| queue_runs(w, self.src.branch, n, group))
                 })
                 .unwrap_or_default();
-            if runs.is_empty() {
+            if runs.is_empty() && group.is_none() {
                 if let Some(id) = trusted
                     .and_then(|v| string(v, "targetUrl"))
                     .and_then(|u| guard::run_id(self.src.repository, u))
@@ -313,8 +320,8 @@ mod tests {
                 "2026-01-01T12:00:00Z",
             ),
         ];
-        assert_eq!(queue_runs(&rows, "main", 12), vec!["8", "9"]);
-        assert!(queue_runs(&rows, "main", 13).is_empty());
+        assert_eq!(queue_runs(&rows, "main", 12, None), vec!["8", "9"]);
+        assert!(queue_runs(&rows, "main", 13, None).is_empty());
     }
     #[test]
     fn fresh_size_and_decayed_returns() {

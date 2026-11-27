@@ -22,6 +22,7 @@ from .intake_guard import (
     SourceResolution,
     batch_name,
     eligibility,
+    failed_queue_check,
     graphql,
     manifest,
     pin_ref,
@@ -64,6 +65,23 @@ TAKEOVER_NOTE = (
 )
 
 
+def log_round(record, end, landed):
+    if not end:
+        return
+    def elapsed(start):
+        try:
+            delta = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+            return int(delta) if delta >= 0 else None
+        except (TypeError, ValueError):
+            return None
+    if (t := elapsed(record.get("started"))) is not None:
+        print(f"Round duration: {t}s", flush=True)
+    if landed:
+        for pr, stamp in sorted(record.get("source_green_at", {}).items()):
+            if (t := elapsed(stamp)) is not None:
+                print(f"Source #{pr} checks-to-main: {t}s", flush=True)
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -89,7 +107,7 @@ def run_receipts(repository, run_id, directory, patterns=RECEIPT_ARTIFACTS):
     return failed
 
 
-def queue_runs(rows, branch, number):
+def queue_runs(rows, branch, number, group=None):
     """Ids of the completed runs of batch #number's newest merge group, oldest first.
 
     A batch that fails in the merge queue keeps its fast PR status, and the
@@ -98,7 +116,10 @@ def queue_runs(rows, branch, number):
     prefix = f"gh-readonly-queue/{branch}/pr-{number}-"
     done = [
         r for r in rows
-        if str(r.get("head_branch") or "").startswith(prefix) and r.get("status") == "completed"
+        if str(r.get("head_branch") or "").startswith(prefix) and (
+            r.get("head_sha") == group and r.get("run_attempt") == 1
+            if group is not None else r.get("status") == "completed"
+        )
     ]
     if not done:
         return []
@@ -609,6 +630,7 @@ class Intake:
                 f"Landed batch #{number} with {len(record['members'])} source PRs.",
                 flush=True,
             )
+            log_round(record, row.get("mergedAt"), True)
             record = counted(record, 0, len(record["members"]))
             self.finish(refs, lock, record, record["members"])
             return True
@@ -650,6 +672,20 @@ class Intake:
         if pr["isInMergeQueue"]:
             entry = pr.get("mergeQueueEntry") or {}
             group = (entry.get("headCommit") or {}).get("oid")
+            if len(record["members"]) > 1 and entry.get("position") == 1 and group:
+                try:
+                    failed = failed_queue_check(self.repository, number, tip, group)
+                except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+                    print(f"Could not read required queue checks: {exc}", flush=True)
+                    failed = None
+                if failed:
+                    age = int((datetime.fromisoformat(now()) - datetime.fromisoformat(record["started"])).total_seconds())
+                    print(f"Batch #{number}: required check {failed} failed on {group} after {age}s; splitting.", flush=True)
+                    remove, pending, why = self.blame(number, record, {}, group)
+                    print(f"Batch #{number}: {why}", flush=True)
+                    self.plan_close(lock, counted(record, len(remove), len(remove)), remove, pending,
+                                    **(dict(reject=remove) if remove else {}))
+                    return True
             detail = (
                 f"protected group {group[:12]} assigned"
                 if group
@@ -697,6 +733,7 @@ class Intake:
                 reason = "failed_checks"
             members = record["members"]
             print(f"Batch #{number} left admission: {reason}", flush=True)
+            log_round(record, now(), False)
             if reason == "failed_checks" and len(members) > 1:
                 remove, pending, why = self.blame(number, record, trusted)
                 print(f"Batch #{number}: {why}", flush=True)
@@ -807,6 +844,7 @@ class Intake:
             print(f"Batch {short} goes through the merge queue: {why}", flush=True)
             self.push([(self.active, lock, self.record(dict(record, refused=why), lock))])
             return True
+        log_round(record, now(), True)
         listed = ", ".join(f"#{n}" for n, _ in members)
         print(
             f"Landed batch {short} directly on {self.branch} with {len(members)} source PRs: {listed}.",
@@ -814,7 +852,7 @@ class Intake:
         )
         return True
 
-    def blame(self, number, record, trusted):
+    def blame(self, number, record, trusted, group=None):
         """Who leaves a failed batch, from what its failing test files read (see split_failed)."""
         members = record["members"]
         run = (trusted.get("targetUrl") or "").rsplit("/", 1)[-1]
@@ -827,10 +865,10 @@ class Intake:
                     f"repos/{self.repository}/actions/runs",
                     dict(event="merge_group", per_page=100),
                 )
-                runs = queue_runs((listing or {}).get("workflow_runs") or [], self.branch, number)
+                runs = queue_runs((listing or {}).get("workflow_runs") or [], self.branch, number, group)
             except (github.GitHubError, OSError, ValueError, KeyError, TypeError):
                 runs = []
-            if not runs and run.isdigit():
+            if not runs and group is None and run.isdigit():
                 runs = [run]
             for each in runs:
                 with tempfile.TemporaryDirectory(prefix="lit-receipts-") as directory:

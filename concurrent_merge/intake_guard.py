@@ -164,6 +164,49 @@ def batch_name(base, tip):
     return f"{PREFIX}{base}/{tip}"
 
 
+def failed_queue_check(repository, number, tip, group):
+    """A required failure can split a batch while its other jobs are still running."""
+    owner, repo = repository.split("/")
+    after, cursors, checks = None, set(), {}
+    while True:
+        data = graphql("""query LitQueueChecks($o:String!,$r:String!,$n:Int!,$after:String){
+  repository(owner:$o,name:$r){pullRequest(number:$n){headRefOid
+    mergeQueueEntry{position headCommit{oid statusCheckRollup{
+      contexts(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{
+        ... on CheckRun{name isRequired(pullRequestNumber:$n) status conclusion checkSuite{app{slug}}}
+        ... on StatusContext{context isRequired(pullRequestNumber:$n) state creator{login}}
+      }}
+    }}}
+  }}
+}""", dict(o=owner, r=repo, n=number, after=after))
+        pr = data["repository"]["pullRequest"] or {}
+        entry = pr.get("mergeQueueEntry") or {}
+        commit = entry.get("headCommit") or {}
+        if (pr.get("headRefOid"), entry.get("position"), commit.get("oid")) != (tip, 1, group):
+            return None
+        contexts = (commit.get("statusCheckRollup") or {}).get("contexts")
+        if not contexts:
+            return None
+        for row in contexts["nodes"]:
+            if row.get("isRequired") is not True:
+                continue
+            if "name" in row:
+                name = row["name"]
+                app = ((row.get("checkSuite") or {}).get("app") or {}).get("slug")
+                red = app == "github-actions" and row.get("status") == "COMPLETED" and row.get("conclusion") == "FAILURE"
+            else:
+                name = row["context"]
+                red = (row.get("creator") or {}).get("login") == "github-actions" and row.get("state") == "FAILURE"
+            checks[name] = checks.get(name, True) and red
+        page = contexts["pageInfo"]
+        if not page["hasNextPage"]:
+            return next((name for name in sorted(checks) if checks[name]), None)
+        after = page["endCursor"]
+        if not after or after in cursors:
+            raise ValueError("Repeated queue check cursor")
+        cursors.add(after)
+
+
 def manifest(repo, name, head, target):
     """Derive membership from the Git graph and reproduce every submitted tree."""
     m = re.fullmatch(re.escape(PREFIX) + f"({OID})/({OID})", name)

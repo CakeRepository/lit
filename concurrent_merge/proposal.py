@@ -102,7 +102,7 @@ def graphql_allowed():
 
 PRIOR_QUERY = """query($owner:String!,$name:String!,$base:String!,$head:String!){
   repository(owner:$owner,name:$name){pullRequests(baseRefName:$base,headRefName:$head,
-    states:[OPEN,CLOSED,MERGED],first:100){nodes{number state headRefOid isCrossRepository url}}}}"""
+    states:[OPEN,CLOSED,MERGED],first:100){nodes{number state headRefOid isCrossRepository url mergedAt}}}}"""
 
 CREATE_QUERY = """mutation($repo:ID!,$base:String!,$head:String!,$title:String!,$body:String!,$draft:Boolean!){
   createPullRequest(input:{repositoryId:$repo,baseRefName:$base,headRefName:$head,
@@ -134,6 +134,7 @@ def prior_pulls(repository, branch, head):
             number=p["number"],
             state="MERGED" if p.get("merged_at") else p["state"].upper(),
             headRefOid=p["head"]["sha"],
+            mergedAt=p.get("merged_at"),
             isCrossRepository=((p["head"].get("repo") or {}).get("full_name") != repository),
             url=p["html_url"],
         )

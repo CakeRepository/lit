@@ -460,7 +460,16 @@ class IntakeCLI(unittest.TestCase):
         record = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
         self.assertEqual(record["refused"], "main refused lit's push: protected branch")
 
+    def test_a_failed_required_job_splits_a_still_queued_batch_with_both_pins_intact(self):
+        self.failed_batch(early=True)
+
     def test_a_failed_batch_returns_the_implicated_source_and_rechecks_the_other(self):
+        self.failed_batch(early=False)
+
+    def test_a_running_group_with_a_published_receipt_identifies_the_failing_source(self):
+        self.failed_batch(early=True, receipt_ready=True)
+
+    def failed_batch(self, early, receipt_ready=False):
         from zipfile import ZipFile, ZIP_DEFLATED
         first = git(self.remote, "rev-parse", self.tip + "^1")
         git(self.remote, "update-ref", "refs/heads/" + self.branch, self.tip)
@@ -470,11 +479,31 @@ class IntakeCLI(unittest.TestCase):
         tree = git(self.remote, "rev-parse", self.tip + "^{tree}")
         lock = git(self.remote, "commit-tree", tree, "-p", self.tip, "-m", json.dumps(record))
         git(self.remote, "update-ref", "refs/heads/lit/active/main", lock)
-        self.prs[77]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0]["state"] = "FAILURE"
+        if early:
+            group = dict(oid=self.tip)
+            self.prs[77].update(isInMergeQueue=True, mergeQueueEntry=dict(position=1, state="AWAITING_CHECKS", headCommit=group))
+            checks = [dict(name="required", status="COMPLETED", conclusion="FAILURE", isRequired=True,
+                           checkSuite=dict(app=dict(slug="github-actions"))),
+                      dict(name="slow sibling", status="IN_PROGRESS", isRequired=True)]
+            observed = dict(oid=self.tip, statusCheckRollup=dict(contexts=dict(nodes=checks, pageInfo=dict(hasNextPage=False))))
+            self.gql("LitQueueChecks", dict(repository=dict(pullRequest=dict(headRefOid=self.tip,
+                     mergeQueueEntry=dict(position=1, headCommit=observed)))))
+        else:
+            self.prs[77]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0]["state"] = "FAILURE"
         self.prs[78] = self.pr(78, first)
         self.prs[78]["commits"]["nodes"][0]["commit"]["status"]["contexts"][0]["state"] = "PENDING"
         self.pulls([1, 2])
-        for n, head in ((77, self.tip), (78, first)):
+        wrappers = [(77, self.tip), (78, first)]
+        if early:
+            self.pulls([2])
+            n, h = self.members[1]
+            repo = Repo(self.remote)
+            snapshot = dict(base=self.base, changes=[dict(number=n, head=h, author="dev")])
+            with patch.dict(os.environ, SOURCE_DATE_EPOCH=EPOCH):
+                sibling, _ = Engine(repo, self.root / "second").batch(self.base, verified_changes(repo, snapshot), lambda _: "model")
+            self.prs[79] = dict(self.pr(79, sibling), isInMergeQueue=True)
+            wrappers.append((79, sibling))
+        for n, head in wrappers:
             self.pulls([n])
             self.gql("pullRequests(baseRefName:", dict(repository=dict(pullRequests=dict(nodes=[
                 dict(number=n, state="OPEN", headRefOid=head, isCrossRepository=False, url="fixture")
@@ -484,8 +513,8 @@ class IntakeCLI(unittest.TestCase):
         zip_path = f"repos/{REPO}/actions/artifacts/211/zip"
         # The batch PR keeps its fast status (run 123); the failing tests' receipts are in its merge-group run.
         self.get("actions/runs?event=merge_group&per_page=100", dict(workflow_runs=[
-            dict(id=456, head_branch=f"gh-readonly-queue/main/pr-77-{self.base}", head_sha="group",
-                 status="completed", created_at=WHEN)]))
+            dict(id=456, head_branch=f"gh-readonly-queue/main/pr-77-{self.base}", head_sha=self.tip if receipt_ready else "group",
+                 status="in_progress" if early else "completed", run_attempt=1, created_at=WHEN)]))
         self.get("actions/runs/456/artifacts?per_page=100&page=1", dict(artifacts=[
             dict(name="lit-tests", expired=False, archive_download_url=zip_path)]))
         with ZipFile(self.root / "failed.zip", "w", compression=ZIP_DEFLATED) as archive:
@@ -495,6 +524,15 @@ class IntakeCLI(unittest.TestCase):
         side = self.parity("--max-batch", "auto", "drain", "--no-wait")
         remote = side / "intake-remote.git"
         next_batch = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/active/main"))
+        if early and not receipt_ready:
+            self.assertEqual(next_batch["members"], [self.members[0]])
+            parallel = json.loads(git(remote, "show", "-s", "--format=%B", "refs/heads/lit/parallel/main"))
+            self.assertEqual(parallel["members"], [self.members[1]])
+            self.assertTrue(parallel["isolated_sibling"])
+            self.assertEqual(len(self.refs(side, "refs/heads/lit/ready").splitlines()), 2)
+            self.assertEqual(self.refs(side, "refs/heads/lit/rejected"), "")
+            self.assertEqual(git(remote, "rev-parse", "main"), self.base)
+            return
         self.assertEqual(next_batch["red"], [1.0, 1.0])
         self.assertEqual(next_batch["members"], [self.members[0]])
         self.assertEqual(next_batch["tip"], first)

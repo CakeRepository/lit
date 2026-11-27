@@ -255,6 +255,16 @@ Run the jobs that write the book in one concurrency group, and let only CI's tok
 
 ## Predict a landing
 
+On a queue pass, lit checks the first multi-PR entry's assigned group commit. A completed failure
+from a GitHub Actions check that GitHub marks required for the PR starts a split even while other
+jobs run. A published failed-read receipt from that exact group can identify the source.
+Otherwise both halves keep their pins. A running retry, an optional check or a replaced group
+cannot identify a failed source. A singleton still needs the normal protected verdict.
+For a workflow with one required aggregate status, its publisher must report a definitive failure
+on the group commit for lit to see it early. Successful rounds log the duration and each recorded
+source's checks-to-main time. Queue landings use GitHub's merge timestamp and direct landings use
+the time lit observes the successful push.
+
 To predict a landing before admission, run `lit preview OWNER/REPO PR_NUMBER [PR_NUMBER ...] --repo batch.git --out observation.json`. It combines the source revisions with the latest assigned queue predecessor and records the source snapshot, queue snapshot, computed time and predicted tree. It also reports earlier entries whose commits are still unknown. After fetching the protected landing, compare it with the saved prediction using `python -m concurrent_merge.projection --repo batch.git --observation observation.json --landed LANDED_SHA`. Prediction uses local Git objects and reads GitHub without requesting CI or publishing a check.
 
 To measure how often early assembly predicts the eventual protected tree, run `python -m concurrent_merge.projection --repo batch.git --queue archived-queue.json --sources ready.json --landed LANDED_SHA`. Use a queue snapshot from `collect` and exact source heads from the same observation. The replay builds trial Git objects on then-current main and on the latest assigned predecessor before the selected sources. It reports unresolved preceding entries, tree equality and source ancestry. It creates no tested ref or check status.

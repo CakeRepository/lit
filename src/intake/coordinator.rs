@@ -337,6 +337,7 @@ impl Intake<'_> {
                 return Err(hold("Merged batch is not on the target branch"));
             }
             println!("Landed batch #{n} with {} source PRs.", m.len());
+            log_round(row, string(&batch, "mergedAt"), true);
             self.finish(refs, lock, &split::counted(row, 0, m.len())?, &m, remaining)?;
             return Ok(true);
         }
@@ -402,6 +403,29 @@ impl Intake<'_> {
         }
         if pr.field("isInMergeQueue")?.boolean()? {
             let entry = pr.get("mergeQueueEntry").unwrap_or(&Value::Null);
+            if m.len() > 1 && entry.get("position").and_then(|p| p.number().ok()) == Some(1) {
+                if let Some(group) = entry.get("headCommit").and_then(|c| string(c, "oid")) {
+                    match self.src.failed_queue_check(n, tip, group) {
+                        Ok(Some(name)) => {
+                            let age = seconds(row.field("started")?.string()?, &now()?)?;
+                            println!("Batch #{n}: required check {name} failed on {group} after {age}s; splitting.");
+                            let (remove, pending, why) =
+                                self.blame(n, row, &m, None, Some(group), remaining)?;
+                            println!("Batch #{n}: {why}");
+                            self.close_rejecting(
+                                lock,
+                                &split::counted(row, remove.len(), remove.len())?,
+                                &remove,
+                                pending,
+                                &remove,
+                            )?;
+                            return Ok(true);
+                        }
+                        Err(e) => println!("Could not read required queue checks: {e}"),
+                        Ok(None) => (),
+                    }
+                }
+            }
             let detail = entry
                 .get("headCommit")
                 .and_then(|c| string(c, "oid"))
@@ -454,8 +478,9 @@ impl Intake<'_> {
                 .filter(|r| *r != "merge_conflict")
                 .unwrap_or("failed_checks");
             println!("Batch #{n} left admission: {reason}");
+            log_round(row, now().ok().as_deref(), false);
             if reason == "failed_checks" && m.len() > 1 {
-                let (remove, pending, why) = self.blame(n, row, &m, trusted, remaining)?;
+                let (remove, pending, why) = self.blame(n, row, &m, trusted, None, remaining)?;
                 println!("Batch #{n}: {why}");
                 self.close_rejecting(
                     lock,

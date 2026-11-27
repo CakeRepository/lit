@@ -8,7 +8,7 @@ use crate::{files, snapshot};
 use std::path::Path;
 const PRIOR_QUERY: &str = r#"query($owner:String!,$name:String!,$base:String!,$head:String!){
   repository(owner:$owner,name:$name){pullRequests(baseRefName:$base,headRefName:$head,
-    states:[OPEN,CLOSED,MERGED],first:100){nodes{number state headRefOid isCrossRepository url}}}}"#;
+    states:[OPEN,CLOSED,MERGED],first:100){nodes{number state headRefOid isCrossRepository url mergedAt}}}}"#;
 const CREATE_QUERY: &str = r#"mutation($repo:ID!,$base:String!,$head:String!,$title:String!,$body:String!,$draft:Boolean!){
   createPullRequest(input:{repositoryId:$repo,baseRefName:$base,headRefName:$head,
     title:$title,body:$body,draft:$draft}){pullRequest{url}}}"#;
@@ -318,6 +318,10 @@ pub(crate) fn prior(
         found.push(object([
             ("number", pr.get("number").cloned().unwrap_or(Value::Null)),
             ("isCrossRepository", Value::Bool(!same)),
+            (
+                "mergedAt",
+                pr.get("merged_at").cloned().unwrap_or(Value::Null),
+            ),
             ("headRefOid", source.field("sha")?.clone()),
             ("state", Value::String(state)),
             ("url", pr.field("html_url")?.clone()),
