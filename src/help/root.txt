@@ -1,11 +1,11 @@
 usage: concurrent-merge [-h]
-                        {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose}
+                        {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose,stage}
                         ...
 
 Batch reviewed GitHub PRs and test their combined Git tree.
 
 positional arguments:
-  {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose}
+  {collect,intake,proof,preview,run,agree,trace,trace-units,select,cached-units,dotnet-units,blame,score-bun,reuse,cached-run,cache-report,shadow,land,propose,stage}
     collect             Snapshot the ready changes (the GitHub merge queue, or
                         PRs picked by number, label or approvals) and fetch
                         their pinned inputs into a bare copy
@@ -43,6 +43,7 @@ positional arguments:
                         target
     propose             Open a tested batch as a draft PR through the existing
                         GitHub review process
+    stage               Promote or roll back an approved snapshot in a bare Git repository
 
 options:
   -h, --help            show this help message and exit

@@ -191,9 +191,6 @@ or real Git landings.
   rerun once before anything is blamed. Real `run` never reruns a failure: it
   remembers a failed candidate as failed, and blame sends a change back on
   that one run.
-- **Release bridges on real deploys.** `promotion.py` models the bridges
-  (see below), but nothing yet connects a stage to a deploy, a tag or a
-  check run.
 
 ## Implementation plan for real Git
 
@@ -290,15 +287,41 @@ itself runs. Whatever GitHub requires still runs on the tree that lands.
    cones are disjoint.
    *Limits:* each landing is one push, so very high rates need step 4's
    components to be large enough to amortize it.
-6. **Bridges on refs.** Keep each stage as a ref (for example
-   `refs/lit/stages/<name>`) moved with `git update-ref` and the expected old
-   value. Read evidence from check runs on the snapshot's commit, and take
-   approval from the hosting platform's protected environments.
-   *Tests:* the `promotion.py` rules, replayed against a local repository.
+6. **Bridges on refs** (`lit stage`). In a dedicated bare repository, promotion
+   updates `refs/lit/stages/<name>` and its journal together. Both updates
+   carry an expected old value. Lit verifies the source stage and the policy's
+   main commit in that same transaction. The check jobs and human environment
+   review belong to the workflow run on that exact main snapshot.
    *Limits:* deploying is outside lit. A stage records what was approved to
    run, not what is running.
 
 ## Release bridges
+
+The native command reads `.lit/stages.json` from the current main of a trusted
+bare repository. Keep this clone's main synchronized with the named GitHub
+repository and restrict writes to its stage and journal refs to the operator.
+For example, a policy can require a lab test followed by a protected release:
+
+```json
+{"repository":"example/app","stages":[
+  {"name":"lab","workflow":".github/workflows/lab.yml","checks":["integration"],"environment":null},
+  {"name":"release","workflow":".github/workflows/release.yml","checks":["verify artifact"],"environment":"production"}
+]}
+```
+
+`lit stage promote lab SHA --repo release.git --expected empty --run RUN_ID`
+records the first snapshot. Supply the stage's present full commit for subsequent
+updates. Lit reads the named jobs from the successful Actions attempt on the
+commit and checks that it is the latest main push run for that workflow and SHA.
+For a protected stage it also verifies the environment ID and GitHub review by
+a configured reviewer or active member of a configured review team. Team checks
+need permission to read membership. Approval-gated reruns are held because the
+review history identifies the run but does not identify an attempt.
+
+`lit stage rollback lab --repo release.git --expected SHA` restores the
+preceding approved snapshot. Inspect the evidence and rollback history with
+`git --git-dir=release.git log --format=%B refs/lit/stage-history/lab`.
+All ref changes are local to the authoritative bare repository.
 
 `concurrent_merge/promotion.py` keeps releases apart from integration. Each
 stage (for example Lab → Early Release → Production) points at one snapshot

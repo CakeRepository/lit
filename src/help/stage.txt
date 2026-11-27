@@ -1,0 +1,6 @@
+usage: lit stage promote NAME FULL_SHA --repo BARE --expected FULL_SHA|empty --run RUN_ID
+       lit stage rollback NAME --repo BARE --expected FULL_SHA
+
+Read the ordered stage policy from .lit/stages.json on main. Check GitHub Actions
+evidence and protected environment reviews, then update the stage and its journal
+atomically in BARE. See docs/compositional-integration.md for the policy format.
