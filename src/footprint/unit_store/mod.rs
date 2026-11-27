@@ -44,6 +44,7 @@ struct Settings {
     job: String,
     template: Vec<String>,
     batch: Option<Vec<String>>,
+    batch_report: Option<String>,
     cwd: String,
     mode: String,
     allow_names: Option<Vec<String>>,
@@ -100,6 +101,13 @@ impl Settings {
         if !matches!(mode, "shadow" | "enforce" | "plan") {
             return Err(err(format!("argument --mode: invalid choice: '{mode}' (choose from 'shadow', 'enforce', 'plan')")));
         }
+        let batch_report = a.optional("--batch-report");
+        if batch_report.is_some_and(|r| r != "bun") {
+            return Err(err(format!(
+                "argument --batch-report: invalid choice: '{}' (choose from 'bun')",
+                batch_report.unwrap_or_default()
+            )));
+        }
         let listings = a.optional("--listings").unwrap_or("names");
         if !matches!(listings, "names" | "exact") {
             return Err(err(format!(
@@ -125,6 +133,7 @@ impl Settings {
                 .filter(|s| !s.is_empty())
                 .map(|s| trace_cli::template(&marked(s)))
                 .transpose()?,
+            batch_report: batch_report.map(Into::into),
             cwd: marked(a.optional("--cwd").unwrap_or("")),
             mode: mode.into(),
             allow_names,
@@ -181,6 +190,7 @@ struct Batch {
     count: usize,
     seconds: Value,
     code: i32,
+    output: String,
 }
 fn batch(config: &Settings, template: &[String], units: &[String]) -> Result<Batch> {
     let mut argv = Vec::new();
@@ -200,20 +210,26 @@ fn batch(config: &Settings, template: &[String], units: &[String]) -> Result<Bat
     let mut cmd = Command::new(exe);
     cmd.args(&argv[1..])
         .current_dir(config.root.join(workspace::path(&config.cwd)?));
-    if let Some(p) = &config.log {
-        let out = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(p)
-            .map_err(|e| files::error(p, e))?;
-        cmd.stdout(out.try_clone().map_err(|e| e.to_string())?)
-            .stderr(out);
-    } else {
-        cmd.stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-    }
+    let mut out = tempfile::tempfile().map_err(|e| e.to_string())?;
+    cmd.stdout(out.try_clone().map_err(|e| e.to_string())?)
+        .stderr(out.try_clone().map_err(|e| e.to_string())?);
     let clock = Instant::now();
     let st = cmd.status().map_err(|e| files::error(exe, e))?;
+    let mut output = Vec::new();
+    {
+        use std::io::{Read, Seek, Write};
+        out.seek(std::io::SeekFrom::Start(0))
+            .map_err(|e| e.to_string())?;
+        out.read_to_end(&mut output).map_err(|e| e.to_string())?;
+        if let Some(p) = &config.log {
+            fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(p)
+                .and_then(|mut f| f.write_all(&output))
+                .map_err(|e| files::error(p, e))?;
+        }
+    }
     #[cfg(unix)]
     let code = {
         use std::os::unix::process::ExitStatusExt;
@@ -223,9 +239,36 @@ fn batch(config: &Settings, template: &[String], units: &[String]) -> Result<Bat
     let code = st.code().unwrap_or(2);
     Ok(Batch {
         count: units.len(),
+        output: String::from_utf8_lossy(&output).into_owned(),
         code,
         seconds: Value::Number(format!("{:.3}", clock.elapsed().as_secs_f64())),
     })
+}
+/// The files a failed batch's output names as failed, or None when it cannot be trusted to name them all: no
+/// report kind, no bun summary line, no file named, or a file outside the batch (concurrent_merge.unit_store).
+fn batch_failures(
+    report: Option<&str>,
+    output: &str,
+    units: &[String],
+) -> Option<BTreeSet<String>> {
+    let summary = output.lines().any(|l| {
+        let w: Vec<&str> = l.split(' ').collect();
+        w.len() >= 6
+            && w[0] == "Ran"
+            && !w[1].is_empty()
+            && w[1].bytes().all(|b| b.is_ascii_digit())
+            && matches!(w[2], "test" | "tests")
+            && w[3] == "across"
+            && !w[4].is_empty()
+            && w[4].bytes().all(|b| b.is_ascii_digit())
+            && matches!(w[5], "file." | "files.")
+    });
+    if report != Some("bun") || !summary {
+        return None;
+    }
+    let named = crate::reports::bun_failed(output);
+    let all: BTreeSet<&String> = units.iter().collect();
+    (!named.is_empty() && named.iter().all(|n| all.contains(n))).then_some(named)
 }
 fn record(config: &Settings, dir: &Path, repo: &Repo, commit: &str, run: &[String]) -> Result<Map> {
     if run.is_empty() {
@@ -354,6 +397,13 @@ fn execute(config: &Settings) -> Result<Value> {
     if batch_ok {
         to_run.clear();
     }
+    let named = batched
+        .as_ref()
+        .filter(|b| b.code != 0)
+        .and_then(|b| batch_failures(config.batch_report.as_deref(), &b.output, &to_run));
+    if let Some(n) = &named {
+        to_run = n.iter().cloned().collect();
+    }
     let ran = record(config, &dir, &repo, &work.commit, &to_run)?;
     let mut failed = Vec::new();
     let mut unsound = Vec::new();
@@ -383,7 +433,7 @@ fn execute(config: &Settings) -> Result<Value> {
     if let Some(b) = &batched {
         ran_seconds.add(Some(&b.seconds))?;
     }
-    let checked = audits.finish(config, &here, &ran, batch_ok)?;
+    let checked = audits.finish(config, &here, &ran, batch_ok || named.is_some())?;
     let predicted = units
         .iter()
         .filter(|n| decisions[*n].reuse())
@@ -440,12 +490,7 @@ fn execute(config: &Settings) -> Result<Value> {
         ("predicted_reusable", (predicted.len() as u64).into()),
         (
             "ran",
-            ((ran.len()
-                + batched
-                    .as_ref()
-                    .filter(|_| to_run.is_empty())
-                    .map_or(0, |b| b.count)) as u64)
-                .into(),
+            (batched.as_ref().map_or(ran.len(), |b| b.count) as u64).into(),
         ),
         (
             "batch",
@@ -457,6 +502,7 @@ fn execute(config: &Settings) -> Result<Value> {
                         ("seconds", b.seconds.clone()),
                         ("exit_code", Value::Number(b.code.to_string())),
                         ("traced_after", Value::Bool(!to_run.is_empty())),
+                        ("traced", (to_run.len() as u64).into()),
                     ])
                 })
                 .unwrap_or(Value::Null),
@@ -507,6 +553,7 @@ fn run(argv: &[String]) -> Result<i32> {
             "--cwd",
             "--each",
             "--batch",
+            "--batch-report",
             "--units-file",
             "--discover",
             "--strip",

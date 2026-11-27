@@ -1,6 +1,7 @@
 usage: concurrent-merge cached-units [-h] --store STORE --job JOB
-                                     [--workdir WORKDIR] [--cwd CWD] --each
-                                     TEMPLATE [--batch TEMPLATE]
+                                     [--workdir WORKDIR] [--cwd CWD]
+                                     --each TEMPLATE [--batch TEMPLATE]
+                                     [--batch-report {bun}]
                                      [--units-file UNITS_FILE]
                                      [--discover GLOB] [--strip STRIP]
                                      [--proof-store PROOF_STORE]
@@ -25,6 +26,8 @@ options:
   --batch TEMPLATE      In enforce mode, run the files that must run as one
                         untraced command, where the part with {} repeats per
                         file; only if it fails, run them one by one traced
+  --batch-report {bun}  Read a failed batch's output as this runner's and
+                        trace only the files it names as failed
   --units-file UNITS_FILE
   --discover GLOB
   --strip STRIP

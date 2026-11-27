@@ -712,6 +712,45 @@ class FootprintRecordingCLI(unittest.TestCase):
             self.assertEqual(result["failed"], ["other.test"])
             self.assertIn("src/lib.ts", result["failed_reads"]["other.test"]["tracked"])
 
+    def test_a_failed_bun_batch_traces_only_the_files_bun_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            for name in ("a", "b", "c"):
+                (repo / f"{name}.test.ts").write_text(name)
+            (repo / "worker").write_text("cat \"$1\" > /dev/null\n")
+            (repo / "batch").write_text(textwrap.dedent("""\
+                for f in "$@"; do cat "$f" > /dev/null; done
+                printf './b.test.ts:\\n(fail) flaky [1ms]\\n\\n Ran 3 tests across 3 files. [2ms]\\n' | sed 's/^ //'
+                exit 1
+                """))
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "three tests")
+            def run(store, *options):
+                argv = ["cached-units", "--workdir", "repo", "--store", store, "--job", "tests",
+                        "--each", "sh worker {}", "--batch", "sh batch {}", "--discover", "*.test.ts",
+                        "--mode", "enforce", "--ignore-env", "*", "--audit-rate", "0",
+                        "--log", "test.log", "--receipt", "receipt.json", *options]
+                env = {"LC_ALL": "C"}
+                if os.environ.get("LIT_BIN"):
+                    pair = lit(root, env, "parity", *argv)
+                    self.assertEqual(pair.returncode, 0, pair.stdout + pair.stderr)
+                proc = lit(root, dict(env, LIT_PYTHON=str(root / "unavailable")), *argv)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                return json.loads((root / "receipt.json").read_text())
+            named = run("named", "--batch-report", "bun")
+            self.assertEqual(named["batch"]["traced"], 1)
+            self.assertEqual(named["ran"], 3)
+            self.assertEqual(named["failed"], [])
+            every = run("every")
+            self.assertEqual(every["batch"]["traced"], 3)
+            bad = lit(root, {}, "cached-units", "--store", "s", "--job", "j", "--each", "x {}", "--discover", "*.ts",
+                      "--batch-report", "jest")
+            self.assertEqual(bad.returncode, 2)
+            self.assertIn("invalid choice: 'jest'", bad.stderr)
+
     def test_job_cache_shadow_enforce_audit_and_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             outer = Path(tmp)

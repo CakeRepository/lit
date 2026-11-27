@@ -134,29 +134,35 @@ fn bun_header(line: &str) -> Option<&str> {
     let ext = ext.strip_prefix(['c', 'm']).unwrap_or(ext);
     matches!(ext, "js" | "jsx" | "ts" | "tsx").then_some(path.strip_prefix("./").unwrap_or(path))
 }
+/// Outside a terminal, bun prints a file's path, then a colon, only before that file's failures, so the files
+/// named that way are the ones that failed (concurrent_merge/bun_log.py).
+pub(crate) fn bun_failed(text: &str) -> BTreeSet<String> {
+    let mut failed = BTreeSet::new();
+    let mut current = None;
+    for line in text.split([
+        '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
+        '\u{2029}',
+    ]) {
+        if let Some(path) = bun_header(line) {
+            current = Some(path);
+        } else if let Some(path) = current {
+            if line.starts_with("(fail)")
+                || line.starts_with("# Unhandled error")
+                || line.starts_with("error: ")
+            {
+                failed.insert(path_key(path.as_bytes()));
+            }
+        }
+    }
+    failed
+}
 fn score(args: &Args<'_>) -> Result<Value> {
     let plan = read(Path::new(args.positional[0]))?;
     let reusable = strings(plan.field("reusable")?)?;
     let mut failed = BTreeSet::new();
     for log in args.all("--log") {
         let bytes = files::read(Path::new(log))?;
-        let text = String::from_utf8_lossy(&bytes);
-        let mut current = None;
-        for line in text.split([
-            '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
-            '\u{2029}',
-        ]) {
-            if let Some(path) = bun_header(line) {
-                current = Some(path);
-            } else if let Some(path) = current {
-                if line.starts_with("(fail)")
-                    || line.starts_with("# Unhandled error")
-                    || line.starts_with("error: ")
-                {
-                    failed.insert(path_key(path.as_bytes()));
-                }
-            }
-        }
+        failed.extend(bun_failed(&String::from_utf8_lossy(&bytes)));
     }
     Ok(object([
         ("commit", plan.field("commit")?.clone()),

@@ -564,6 +564,7 @@ def run_cached_units(args):
         symbols=args.symbols or (),
         scratch=args.scratch or (),
         batch=shlex.split(args.batch) if args.batch else None,
+        batch_report=args.batch_report,
         proofs=args.proof_store, host=not args.no_host, audit_book=args.audit_book,
     )
     if args.receipt:
@@ -906,6 +907,10 @@ def main():
         "--batch", metavar="TEMPLATE",
         help="In enforce mode, run the files that must run as one untraced command, where the "
         "part with {} repeats per file; only if it fails, run them one by one traced",
+    )
+    store_units.add_argument(
+        "--batch-report", choices=["bun"],
+        help="Read a failed batch's output as this runner's and trace only the files it names as failed",
     )
     store_units.add_argument("--units-file", type=Path)
     store_units.add_argument("--discover", action="append", metavar="GLOB")

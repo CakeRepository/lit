@@ -207,6 +207,7 @@ def cached_units(
     symbols=(),
     scratch=(),
     batch=None,
+    batch_report=None,
     proofs=(),
     audit_book=None,
     host=True,
@@ -234,6 +235,11 @@ def cached_units(
     its own record of what it read (for blame). Files run in a batch write no
     record: records a merge group writes are not saved anyway, and main's
     refresh traces every file.
+
+    batch_report: how to read a failed batch's own output. "bun": bun names each
+    file before its failures, so only the files it names run again, traced, and
+    the rest count as passed. If the output does not end in bun's summary, or
+    names no file or a file outside the batch, every file runs traced as before.
 
     scratch: untracked directories of runtime data, such as a server's data
     folder, whose contents are never inputs (see footprint.trace_units).
@@ -304,10 +310,16 @@ def cached_units(
         to_run = shard_of(to_run, weights, shard, shards, pinned)
     run_here = set(to_run)
     batched = None
+    named = None
     if batch and mode == "enforce" and to_run:
         batched = run_batch(batch, sorted(to_run), workdir / cwd, env, log)
         if batched["exit_code"] == 0:
             to_run = []
+        else:
+            named = batch_failures(batch_report, batched.pop("output"), to_run)
+            if named:
+                to_run = sorted(named)
+        batched.pop("output", None)
     with tempfile.TemporaryDirectory(prefix="lit-coverage-") as scratch:
         coverage = {}
         each = {}
@@ -351,7 +363,7 @@ def cached_units(
             if n in ran:
                 ok = ran[n]["exit_code"] == 0
             else:
-                ok = batched is not None and batched["exit_code"] == 0
+                ok = batched is not None and (batched["exit_code"] == 0 or bool(named))
             for signer in vouched[n]:
                 book.record(signer, ok)
                 checked.setdefault(signer, dict(ok=0, wrong=0))["ok" if ok else "wrong"] += 1
@@ -366,10 +378,10 @@ def cached_units(
         started=started.isoformat(),
         units=len(names),
         predicted_reusable=len(predicted),
-        ran=len(ran) + (len(batched["units"]) if batched and not to_run else 0),
+        ran=len(batched["units"]) if batched else len(ran),
         batch=None if batched is None else dict(
             files=len(batched["units"]), seconds=batched["seconds"],
-            exit_code=batched["exit_code"], traced_after=bool(to_run),
+            exit_code=batched["exit_code"], traced_after=bool(to_run), traced=len(to_run),
         ),
         reused=0 if mode != "enforce" else len(predicted) - len(audited & set(predicted)),
         audited=len(audited),
@@ -421,9 +433,28 @@ def run_batch(template, units, cwd, env, log):
     for part in template:
         argv += [part.replace("{}", n) for n in units] if "{}" in part else [part]
     clock = time.monotonic()
-    with open(log, "ab") if log else open(os.devnull, "wb") as out:
+    with tempfile.TemporaryFile() as out:
         code = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT).returncode
-    return dict(units=units, exit_code=code, seconds=round(time.monotonic() - clock, 3))
+        out.seek(0)
+        output = out.read()
+    if log:
+        with open(log, "ab") as f:
+            f.write(output)
+    return dict(units=units, exit_code=code, seconds=round(time.monotonic() - clock, 3),
+                output=output.decode("utf8", errors="replace"))
+
+
+BUN_SUMMARY = re.compile(r"(?m)^Ran \d+ tests? across \d+ files?\.")
+
+
+def batch_failures(report, output, units):
+    """The files a failed batch's output names as failed, or None when it cannot be
+    trusted to name them all (see cached_units' batch_report)."""
+    if report != "bun" or not BUN_SUMMARY.search(output):
+        return None
+    from .bun_log import failed_files
+    named = failed_files(output)
+    return named if named and named <= set(units) else None
 
 
 def _tally(decisions):
